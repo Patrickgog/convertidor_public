@@ -23,6 +23,7 @@ import logging
 
 # Sistema de autenticación
 from auth_system import check_authentication, show_user_info
+# Versión corregida - sin modo desarrollo
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("kml_kmz")
