@@ -336,7 +336,7 @@ def show_login_page():
                     st.error("❌ Código inválido o expirado")
                         auth.auth_codes[email]['attempts'] += 1
                         auth.save_data()
-                else:
+            else:
                     st.error("❌ No hay código pendiente para este email")
     
     
