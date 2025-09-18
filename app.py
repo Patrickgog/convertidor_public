@@ -21,14 +21,9 @@ import pyproj
 from xml.etree import ElementTree as ET
 import logging
 
-# Sistema de autenticación (modo conmutado: completo con email / simplificado)
-try:
-    from auth_system import check_authentication, show_user_info
-    AUTH_MODE = "complete"
-except Exception:
-    from auth_simple import check_simple_authentication as check_authentication, show_simple_user_info as show_user_info
-    AUTH_MODE = "simple"
-    st.write("🔧 Modo desarrollo: Autenticación simplificada activa")
+# Sistema de autenticación
+from auth_system import check_authentication, show_user_info
+# Versión corregida - sin modo desarrollo
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("kml_kmz")
