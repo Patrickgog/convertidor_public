@@ -102,17 +102,39 @@ class AuthSystem:
             msg = MIMEMultipart()
             msg['From'] = self.admin_email
             msg['To'] = email
-            msg['Subject'] = "Código de acceso - App Topografía"
+            msg['Subject'] = "🚀 Conversor Universal Profesional - Código de Acceso"
             
             body = f"""
             <html>
-            <body>
-                <h2>🔐 Código de Acceso</h2>
-                <p>Tu código de acceso es: <strong>{code}</strong></p>
-                <p>Este código expira en 10 minutos.</p>
-                <p>Si no solicitaste este código, ignora este email.</p>
-                <hr>
-                <p><small>App Topografía - Desarrollado por Patricio Sarmiento</small></p>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f5f5;">
+                <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                    <h1 style="color: #2c3e50; text-align: center; margin-bottom: 30px;">🚀 CONVERSOR UNIVERSAL PROFESIONAL</h1>
+                    
+                    <h2 style="color: #27ae60;">¡Bienvenido!</h2>
+                    <p>Has solicitado acceso al <strong>Conversor Universal Profesional</strong>.</p>
+                    
+                    <div style="background-color: #ecf0f1; padding: 20px; border-radius: 5px; text-align: center; margin: 20px 0;">
+                        <h3 style="color: #2c3e50; margin: 0;">🔑 Tu código de acceso es:</h3>
+                        <h1 style="color: #e74c3c; font-size: 32px; margin: 10px 0;">{code}</h1>
+                    </div>
+                    
+                    <p style="color: #7f8c8d;">⏰ Este código expira en 10 minutos</p>
+                    
+                    <h3 style="color: #2c3e50;">📋 Instrucciones:</h3>
+                    <ol style="color: #34495e;">
+                        <li>Regresa a la aplicación web</li>
+                        <li>Introduce este código en el campo correspondiente</li>
+                        <li>¡Comienza a convertir tus archivos geoespaciales!</li>
+                    </ol>
+                    
+                    <hr style="border: none; border-top: 2px solid #ecf0f1; margin: 30px 0;">
+                    
+                    <div style="text-align: center; color: #7f8c8d; font-size: 14px;">
+                        <p><strong>Desarrollador:</strong> Patricio Sarmiento Reinoso</p>
+                        <p><strong>WhatsApp:</strong> +593995959047</p>
+                        <p><strong>Soporte:</strong> L-V 8AM-6PM, S 9AM-2PM (GMT-5)</p>
+                    </div>
+                </div>
             </body>
             </html>
             """
@@ -261,7 +283,7 @@ class AuthSystem:
 
 def show_login_page():
     """Muestra página de login"""
-    st.title("🔐 Acceso Restringido")
+    st.title("🚀 Conversor Universal Profesional")
     st.markdown("Esta aplicación requiere autenticación para su uso.")
     
     auth = AuthSystem()
