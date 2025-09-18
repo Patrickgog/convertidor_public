@@ -1645,10 +1645,11 @@ def main():
     # ...existing code...
     st.set_page_config(page_title="CONVERSOR UNIVERSAL PROFESIONAL", layout="wide")
     st.markdown("""
-    <div style='display:flex;align-items:center;gap:12px;'>
-        <img src='https://cdn-icons-png.flaticon.com/512/684/684908.png' width='38'/>
-        <h2 style='margin:0;'>CONVERSOR UNIVERSAL PROFESIONAL</h2>
-    </div>
+    <style>
+        /* Oculta el botón/enlace a GitHub del toolbar en Cloud */
+        div[data-testid="stToolbar"] a[href*="github.com"] { display: none !important; }
+        div[data-testid="stToolbar"] button[title="View source"] { display: none !important; }
+        </style>
     """, unsafe_allow_html=True)
     st.caption("Carga archivos, define el sistema de referencia y descarga resultados geoespaciales.")
 
