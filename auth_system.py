@@ -266,6 +266,9 @@ def show_login_page():
     
     auth = AuthSystem()
     
+    # Mostrar información de usuarios autorizados
+    st.info("📧 **Emails autorizados:**\n" + "\n".join([f"• {email}" for email in auth.authorized_emails]))
+    
     # Formulario de login
     with st.form("login_form"):
         email = st.text_input("📧 Email", placeholder="tu@email.com")
