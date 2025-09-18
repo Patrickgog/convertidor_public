@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Visor GeoJSON Profesional</title>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Arial', sans-serif;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    #panel-trigger {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 280px;
+      height: 450px;
+      z-index: 1;
+    }
+
+    #floating-panel {
+      position: absolute;
+      top: 90px;
+      left: 15px;
+      width: 250px;
+      background-color: rgba(40, 40, 40, 0.7);
+      backdrop-filter: blur(5px);
+      border-radius: 8px;
+      padding: 15px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      z-index: 2;
+      color: white;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+
+    #panel-trigger:hover #floating-panel {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .file-input-wrapper {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      width: 250px;
+      opacity: 0.40;
+      pointer-events: auto;
+      z-index: 3;
+      transition: opacity 0.3s ease;
+    }
+
+    #panel-trigger:hover .file-input-wrapper {
+      opacity: 1;
+    }
+
+    .file-input {
+      width: 100%;
+      opacity: 0;
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      cursor: pointer;
+    }
+
+    .file-input-label {
+      display: block;
+      padding: 8px;
+      background-color: rgba(255, 255, 255, 0.1);
+      border: 1px dashed rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      text-align: center;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #filename-display {
+      font-size: 11px;
+      margin-top: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #ccc;
+    }
+
+    .control-group {
+      margin-bottom: 15px;
+    }
+
+    .control-group h3 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      font-weight: bold;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      padding-bottom: 5px;
+    }
+
+    .style-select {
+      width: 100%;
+      padding: 8px;
+      background-color: rgba(20, 20, 20, 0.9);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      margin-bottom: 15px;
+      font-size: 12px;
+    }
+
+    .elevation-input {
+      width: 100%;
+      padding: 8px;
+      background-color: rgba(255, 255, 255, 0.1);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      margin: 8px 0;
+    }
+
+    .checkbox-group input {
+      margin-right: 8px;
+      cursor: pointer;
+    }
+
+    .checkbox-group label {
+      font-size: 12px;
+      cursor: pointer;
+      flex-grow: 1;
+    }
+
+    .color-select {
+      width: 70px;
+      padding: 4px;
+      background-color: rgba(20, 20, 20, 0.9);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .north-control {
+      width: 100%;
+      padding: 8px;
+      background-color: rgba(255, 255, 255, 0.1);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    #error {
+      color: #ff6b6b;
+      font-size: 12px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    #developer-footer {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1;
+      color: #ffffff;
+      font-size: 12px;
+      background-color: rgba(40, 40, 40, 0.5);
+      padding: 5px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+
+    #api-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    #api-modal.hidden {
+      display: none;
+    }
+
+    #api-modal-content {
+      background-color: #333;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      color: white;
+      width: 90%;
+      max-width: 400px;
+      text-align: center;
+    }
+
+    #api-modal-content h2 {
+      margin: 0 0 15px 0;
+      font-size: 18px;
+    }
+
+    #api-modal-content input {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 15px;
+      background-color: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      color: white;
+      font-size: 14px;
+    }
+
+    #api-modal-content button {
+      padding: 8px 16px;
+      background-color: #007bff;
+      border: none;
+      border-radius: 4px;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    #api-modal-content button:hover {
+      background-color: #0056b3;
+    }
+
+    #api-error {
+      color: #ff6b6b;
+      font-size: 12px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    #north-arrow {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 40px;
+      height: 40px;
+      cursor: move;
+      z-index: 5;
+      user-select: none;
+    }
+
+    #north-arrow svg {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="api-modal">
+    <div id="api-modal-content">
+      <h2>Ingrese su Mapbox API Key</h2>
+      <input type="text" id="api-key-input" placeholder="pk.eyJ1IjoieW91ci11c2Vybm..." />
+      <button id="api-submit">Confirmar</button>
+      <div id="api-error">Por favor, ingrese una clave válida</div>
+    </div>
+  </div>
+
+  <div id="panel-trigger">
+    <div class="file-input-wrapper">
+      <input type="file" id="geojsonInput" accept=".json,.geojson" class="file-input" />
+      <label for="geojsonInput" class="file-input-label">Seleccionar archivo JSON o GeoJSON</label>
+      <div id="filename-display">No se ha cargado archivo</div>
+    </div>
+
+    <div id="floating-panel">
+      <div class="control-group">
+        <h3>ESTILO DEL MAPA</h3>
+        <select id="styleSelect" class="style-select">
+          <option value="mapbox://styles/mapbox/light-v11" selected>Positron (no labels)</option>
+          <option value="mapbox://styles/mapbox/satellite-v9">Satélite</option>
+          <option value="mapbox://styles/mapbox/light-v11">Claro</option>
+          <option value="mapbox://styles/mapbox/dark-v11">Oscuro</option>
+          <option value="mapbox://styles/mapbox/outdoors-v12">Outdoors</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <h3>FACTOR DE ELEVACIÓN (3D)</h3>
+        <input type="number" id="elevationFactor" class="elevation-input" value="1.5" min="0" max="10" step="0.1" placeholder="Factor de elevación (0-10)" />
+      </div>
+
+      <div class="control-group">
+        <h3>LAYERS DEL MAPA</h3>
+        <div id="layers-control"></div>
+      </div>
+
+      <div class="control-group">
+        <h3>SÍMBOLO DE NORTE</h3>
+        <label for="north-scale">Escala:</label>
+        <input type="number" id="north-scale" class="north-control" value="1" min="0.5" max="2" step="0.1" />
+        <label for="north-opacity">Transparencia:</label>
+        <input type="range" id="north-opacity" class="north-control" value="1" min="0" max="1" step="0.1" />
+        <label for="north-color">Color:</label>
+        <select id="north-color" class="north-control">
+          <option value="#000000" selected>Negro</option>
+          <option value="#ffffff">Blanco</option>
+          <option value="#ff0000">Rojo</option>
+          <option value="#00ff00">Verde</option>
+          <option value="#0000ff">Azul</option>
+        </select>
+      </div>
+
+      <div id="error"></div>
+    </div>
+  </div>
+
+  <div id="north-arrow">
+    <svg viewBox="0 0 100 150">
+      <circle cx="50" cy="50" r="45" fill="none" stroke="#000000" stroke-width="2" />
+      <path d="M50 20 L70 60 L30 60 Z" fill="none" stroke="#000000" stroke-width="4" />
+      <text x="50" y="120" font-size="30" font-family="Helvetica, sans-serif" font-weight="bold" fill="#000000" text-anchor="middle" dy=".3em">N</text>
+    </svg>
+  </div>
+
+  <div id="developer-footer">
+    Desarrollador: Patricio Sarmiento Reinoso
+  </div>
+
+  <script>
+    // Verificar si ya existe un API Key en localStorage
+    let mapboxAccessToken = localStorage.getItem('mapboxAccessToken');
+    const apiModal = document.getElementById('api-modal');
+    const apiKeyInput = document.getElementById('api-key-input');
+    const apiSubmitButton = document.getElementById('api-submit');
+    const apiError = document.getElementById('api-error');
+
+    // Variables globales
+    let map = null;
+    let currentGeoJSON = null;
+    let loadDataToMapFunction = null;
+    let layersList = [];
+    let layerColors = {};
+    let northScale = 1;
+    let northOpacity = 1;
+    let northColor = '#000000';
+
+    // Función para inicializar el mapa
+    function initializeMap() {
+      console.log('Inicializando mapa...');
+      try {
+        // Verificar que el contenedor existe
+        if (!document.getElementById('map')) {
+          throw new Error('Contenedor #map no encontrado en el DOM');
+        }
+
+        mapboxgl.accessToken = mapboxAccessToken;
+
+        // Inicializar el mapa
+        map = new mapboxgl.Map({
+          container: 'map',
+          style: 'mapbox://styles/mapbox/light-v11',
+          center: [-78.421, -2.974],
+          zoom: 12,
+          pitch: 45,
+          bearing: -17.6,
+          maxZoom: 20
+        });
+
+        // Añadir controles básicos
+        map.addControl(new mapboxgl.NavigationControl());
+        map.addControl(new mapboxgl.FullscreenControl());
+
+        // Confirmar que el mapa se cargó
+        map.on('load', function() {
+          console.log('Mapa cargado exitosamente');
+          applyElevationFactor();
+        });
+
+        // Manejo de errores de carga
+        map.on('error', function(e) {
+          console.error('Error al cargar el mapa:', e);
+          document.getElementById('error').textContent = 'Error al cargar el mapa: ' + (e.error?.message || 'Desconocido');
+          document.getElementById('error').style.display = 'block';
+        });
+
+        // Configurar el símbolo de norte arrastrable
+        const northArrow = document.getElementById('north-arrow');
+        let isDragging = false;
+        let currentX;
+        let currentY;
+
+        northArrow.addEventListener('mousedown', (e) => {
+          isDragging = true;
+          const rect = northArrow.getBoundingClientRect();
+          currentX = e.clientX - rect.left;
+          currentY = e.clientY - rect.top;
+          northArrow.style.cursor = 'grabbing';
+          console.log('Iniciando arrastre del símbolo de norte');
+        });
+
+        document.addEventListener('mousemove', (e) => {
+          if (isDragging) {
+            northArrow.style.left = `${e.clientX - currentX}px`;
+            northArrow.style.top = `${e.clientY - currentY}px`;
+            northArrow.style.transform = '';
+          }
+        });
+
+        document.addEventListener('mouseup', () => {
+          isDragging = false;
+          northArrow.style.cursor = 'move';
+          console.log('Finalizando arrastre del símbolo de norte');
+        });
+
+        // Ajustar el tamaño, opacidad y color del símbolo
+        function updateNorthArrowStyle() {
+          const zoom = map.getZoom();
+          const baseSize = 40;
+          const scale = Math.pow(1.2, zoom - 12) * northScale;
+          const newSize = baseSize * scale;
+          northArrow.style.width = `${newSize}px`;
+          northArrow.style.height = `${newSize}px`;
+          northArrow.style.opacity = northOpacity;
+          northArrow.querySelector('path').setAttribute('stroke', northColor);
+          northArrow.querySelector('text').setAttribute('fill', northColor);
+        }
+
+        // Ajustar rotación según el bearing del mapa
+        function updateNorthArrowRotation() {
+          if (!isDragging) {
+            const bearing = map.getBearing();
+            northArrow.style.transform = `translate(-50%, -50%) rotate(${-bearing}deg)`;
+          } else {
+            northArrow.style.transform = '';
+          }
+        }
+
+        // Controles del símbolo de norte
+        document.getElementById('north-scale').addEventListener('input', function() {
+          northScale = parseFloat(this.value) || 1;
+          if (northScale < 0.5 || northScale > 2) {
+            document.getElementById('error').textContent = 'La escala debe estar entre 0.5 y 2';
+            document.getElementById('error').style.display = 'block';
+            return;
+          }
+          document.getElementById('error').style.display = 'none';
+          updateNorthArrowStyle();
+        });
+
+        document.getElementById('north-opacity').addEventListener('input', function() {
+          northOpacity = parseFloat(this.value);
+          updateNorthArrowStyle();
+        });
+
+        document.getElementById('north-color').addEventListener('change', function() {
+          northColor = this.value;
+          updateNorthArrowStyle();
+        });
+
+        map.on('zoom', updateNorthArrowStyle);
+        map.on('rotate', updateNorthArrowRotation);
+        updateNorthArrowStyle();
+        updateNorthArrowRotation();
+
+        // Función para actualizar colores desde los select
+        function updateLayerColors() {
+          layersList.forEach(layer => {
+            const colorSelect = document.getElementById(`color-${layer}`);
+            if (colorSelect) {
+              const newColor = colorSelect.value;
+              layerColors[layer] = newColor;
+
+              if (map.getLayer(`layer-${layer}`)) {
+                map.setPaintProperty(`layer-${layer}`, 'line-color', newColor);
+              }
+              if (map.getLayer(`layer-${layer}-points`)) {
+                map.setPaintProperty(`layer-${layer}-points`, 'circle-color', newColor);
+              }
+              if (map.getLayer(`layer-${layer}-circles`)) {
+                map.setPaintProperty(`layer-${layer}-circles`, 'fill-color', newColor);
+              }
+              if (map.getLayer(`labels-${layer}`)) {
+                map.setPaintProperty(`labels-${layer}`, 'text-color', newColor);
+              }
+            }
+          });
+        }
+
+        // Función para aplicar el factor de elevación
+        function applyElevationFactor() {
+          const elevationFactor = parseFloat(document.getElementById('elevationFactor').value) || 1.5;
+          if (elevationFactor < 0 || elevationFactor > 10) {
+            document.getElementById('error').textContent = 'El factor de elevación debe estar entre 0 y 10';
+            document.getElementById('error').style.display = 'block';
+            return;
+          }
+
+          if (!map.getSource('mapbox-dem')) {
+            map.addSource('mapbox-dem', {
+              type: 'raster-dem',
+              url: 'mapbox://mapbox.terrain-rgb',
+              tileSize: 512,
+              maxzoom: 14
+            });
+          }
+
+          map.setTerrain({
+            source: 'mapbox-dem',
+            exaggeration: elevationFactor
+          });
+
+          map.setPitch(45);
+        }
+
+        // Función para validar y convertir a GeoJSON
+        function convertToGeoJSON(jsonData) {
+          if (jsonData.type === 'FeatureCollection' && Array.isArray(jsonData.features)) {
+            layersList = [...new Set(jsonData.features.map(feature => feature.properties.layer))];
+            layersList.sort();
+
+            layersList.forEach(layer => {
+              if (!layerColors[layer]) {
+                const defaultColors = ['#00ff00', '#0000ff', '#ff0000', '#ffff00', '#ffffff', '#00ffff'];
+                layerColors[layer] = defaultColors[Object.keys(layerColors).length % defaultColors.length];
+              }
+            });
+
+            const layersControlDiv = document.getElementById('layers-control');
+            layersControlDiv.innerHTML = '';
+
+            layersList.forEach(layer => {
+              const layerDiv = document.createElement('div');
+              layerDiv.className = 'checkbox-group';
+
+              const checkbox = document.createElement('input');
+              checkbox.type = 'checkbox';
+              checkbox.id = `show-${layer}`;
+              checkbox.checked = true;
+              checkbox.addEventListener('change', () => {
+                if (currentGeoJSON) {
+                  loadDataToMap();
+                }
+              });
+
+              const label = document.createElement('label');
+              label.htmlFor = `show-${layer}`;
+              label.textContent = layer;
+
+              const colorSelect = document.createElement('select');
+              colorSelect.id = `color-${layer}`;
+              colorSelect.className = 'color-select';
+              const colorOptions = [
+                { value: '#00ff00', text: 'Verde' },
+                { value: '#ff0000', text: 'Rojo' },
+                { value: '#0000ff', text: 'Azul' },
+                { value: '#ffff00', text: 'Amarillo' },
+                { value: '#ffffff', text: 'Blanco' },
+                { value: '#000000', text: 'Negro' }
+              ];
+              colorOptions.forEach(option => {
+                const opt = document.createElement('option');
+                opt.value = option.value;
+                opt.textContent = option.text;
+                if (option.value === layerColors[layer]) {
+                  opt.selected = true;
+                }
+                colorSelect.appendChild(opt);
+              });
+              colorSelect.addEventListener('change', updateLayerColors);
+
+              layerDiv.appendChild(checkbox);
+              layerDiv.appendChild(label);
+              layerDiv.appendChild(colorSelect);
+              layersControlDiv.appendChild(layerDiv);
+            });
+
+            return jsonData;
+          }
+
+          const geojson = {
+            type: 'FeatureCollection',
+            features: []
+          };
+
+          if (jsonData.layers) {
+            Object.keys(jsonData.layers).forEach(layerName => {
+              const layerData = jsonData.layers[layerName];
+
+              if (layerData.points) {
+                layerData.points.forEach(point => {
+                  geojson.features.push({
+                    type: 'Feature',
+                    geometry: {
+                      type: 'Point',
+                      coordinates: [point.lon, point.lat]
+                    },
+                    properties: {
+                      layer: layerName,
+                      type: 'point'
+                    }
+                  });
+                });
+              }
+
+              if (layerData.lines) {
+                layerData.lines.forEach(line => {
+                  geojson.features.push({
+                    type: 'Feature',
+                    geometry: {
+                      type: 'LineString',
+                      coordinates: [
+                        [line.start_lonlat[0], line.start_lonlat[1]],
+                        [line.end_lonlat[0], line.end_lonlat[1]]
+                      ]
+                    },
+                    properties: {
+                      layer: layerName,
+                      type: 'line'
+                    }
+                  });
+                });
+              }
+
+              if (layerData.polylines) {
+                layerData.polylines.forEach(polyline => {
+                  if (polyline.vertices_lonlat && polyline.vertices_lonlat.length > 1) {
+                    geojson.features.push({
+                      type: 'Feature',
+                      geometry: {
+                        type: 'LineString',
+                        coordinates: polyline.vertices_lonlat
+                      },
+                      properties: {
+                        layer: layerName,
+                        type: 'polyline'
+                      }
+                    });
+                  }
+                });
+              }
+
+              if (layerData.texts) {
+                layerData.texts.forEach(text => {
+                  geojson.features.push({
+                    type: 'Feature',
+                    geometry: {
+                      type: 'Point',
+                      coordinates: [text.lon, text.lat]
+                    },
+                    properties: {
+                      text: text.text,
+                      layer: layerName,
+                      type: 'text',
+                      rotation: text.rotation || 0
+                    }
+                  });
+                });
+              }
+
+              if (layerData.circles) {
+                layerData.circles.forEach(circle => {
+                  geojson.features.push({
+                    type: 'Feature',
+                    geometry: {
+                      type: 'Polygon',
+                      coordinates: [circle.vertices_lonlat || []]
+                    },
+                    properties: {
+                      layer: layerName,
+                      type: 'circle',
+                      center_x: circle.center[0],
+                      center_y: circle.center[1],
+                      radius: circle.radius
+                    }
+                  });
+                });
+              }
+
+              if (layerData.shapes) {
+                layerData.shapes.forEach(shape => {
+                  geojson.features.push({
+                    type: 'Feature',
+                    geometry: {
+                      type: shape.closed ? 'Polygon' : 'LineString',
+                      coordinates: shape.closed ? [shape.vertices_lonlat.concat([shape.vertices_lonlat[0]])] : shape.vertices_lonlat
+                    },
+                    properties: {
+                      layer: layerName,
+                      type: 'shape'
+                    }
+                  });
+                });
+              }
+            });
+
+            return convertToGeoJSON(geojson);
+          }
+
+          return geojson;
+        }
+
+        // Función para hacer zoom a los datos cargados
+        function zoomToData() {
+          if (!currentGeoJSON) return;
+
+          const bounds = new mapboxgl.LngLatBounds();
+          
+          currentGeoJSON.features.forEach(feature => {
+            if (feature.geometry.type === 'Point') {
+              bounds.extend(feature.geometry.coordinates);
+            } else if (feature.geometry.type === 'LineString') {
+              feature.geometry.coordinates.forEach(coord => {
+                bounds.extend(coord);
+              });
+            } else if (feature.geometry.type === 'Polygon') {
+              feature.geometry.coordinates[0].forEach(coord => {
+                bounds.extend(coord);
+              });
+            }
+          });
+
+          if (!bounds.isEmpty()) {
+            map.fitBounds(bounds, {
+              padding: 50,
+              maxZoom: 18,
+              duration: 1500
+            });
+          }
+        }
+
+        // Función para cargar los datos en el mapa
+        function loadDataToMap() {
+          if (!currentGeoJSON) return;
+
+          layersList.forEach(layer => {
+            if (map.getLayer(`layer-${layer}`)) {
+              map.removeLayer(`layer-${layer}`);
+            }
+            if (map.getLayer(`layer-${layer}-points`)) {
+              map.removeLayer(`layer-${layer}-points`);
+            }
+            if (map.getLayer(`layer-${layer}-circles`)) {
+              map.removeLayer(`layer-${layer}-circles`);
+            }
+            if (map.getLayer(`labels-${layer}`)) {
+              map.removeLayer(`labels-${layer}`);
+            }
+          });
+
+          if (!map.getSource('geojson-data')) {
+            map.addSource('geojson-data', {
+              type: 'geojson',
+              data: currentGeoJSON
+            });
+          } else {
+            map.getSource('geojson-data').setData(currentGeoJSON);
+          }
+
+          layersList.forEach(layer => {
+            const showLayer = document.getElementById(`show-${layer}`).checked;
+
+            if (showLayer) {
+              map.addLayer({
+                id: `layer-${layer}`,
+                type: 'line',
+                source: 'geojson-data',
+                filter: ['all',
+                  ['==', ['get', 'layer'], layer],
+                  ['in', ['get', 'type'], ['literal', ['line', 'polyline', 'shape']]]
+                ],
+                paint: {
+                  'line-color': layerColors[layer] || '#0000ff',
+                  'line-width': 3,
+                  'line-opacity': 0.8
+                }
+              });
+
+              map.addLayer({
+                id: `layer-${layer}-points`,
+                type: 'circle',
+                source: 'geojson-data',
+                filter: ['all',
+                  ['==', ['get', 'layer'], layer],
+                  ['==', ['get', 'type'], 'point']
+                ],
+                paint: {
+                  'circle-radius': 6,
+                  'circle-color': layerColors[layer] || '#00ff00',
+                  'circle-opacity': 0.8
+                }
+              });
+
+              map.addLayer({
+                id: `layer-${layer}-circles`,
+                type: 'fill',
+                source: 'geojson-data',
+                filter: ['all',
+                  ['==', ['get', 'layer'], layer],
+                  ['==', ['get', 'type'], 'circle']
+                ],
+                paint: {
+                  'fill-color': layerColors[layer] || '#ff0000',
+                  'fill-opacity': 0.5
+                }
+              });
+
+              map.addLayer({
+                id: `labels-${layer}`,
+                type: 'symbol',
+                source: 'geojson-data',
+                filter: ['all',
+                  ['==', ['get', 'layer'], layer],
+                  ['==', ['get', 'type'], 'text']
+                ],
+                layout: {
+                  'text-field': ['get', 'text'],
+                  'text-size': 12,
+                  'text-anchor': 'top',
+                  'text-offset': [0, 1],
+                  'text-rotate': ['get', 'rotation']
+                },
+                paint: {
+                  'text-color': layerColors[layer] || '#ffffff',
+                  'text-halo-color': '#000000',
+                  'text-halo-width': 1
+                }
+              });
+            }
+          });
+
+          zoomToData();
+        }
+
+        loadDataToMapFunction = loadDataToMap;
+
+        document.getElementById('styleSelect').addEventListener('change', function() {
+          const selectedStyle = this.value;
+          map.setStyle(selectedStyle);
+          
+          map.once('style.load', function() {
+            applyElevationFactor();
+            if (currentGeoJSON) {
+              loadDataToMap();
+            }
+          });
+        });
+
+        document.getElementById('elevationFactor').addEventListener('change', function() {
+          applyElevationFactor();
+        });
+
+        document.getElementById('geojsonInput').addEventListener('change', function(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const validExtensions = ['.json', '.geojson'];
+          const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+          if (!validExtensions.includes(fileExtension)) {
+            document.getElementById('error').textContent = 'Error: Solo se permiten archivos .json o .geojson';
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('filename-display').textContent = 'Archivo no válido';
+            return;
+          }
+
+          document.getElementById('filename-display').textContent = file.name;
+          document.getElementById('error').style.display = 'none';
+
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            try {
+              const jsonData = JSON.parse(e.target.result);
+              currentGeoJSON = convertToGeoJSON(jsonData);
+              
+              if (currentGeoJSON.features.length === 0) {
+                throw new Error('El archivo no contiene datos geoespaciales válidos');
+              }
+              
+              loadDataToMap();
+            } catch (error) {
+              console.error('Error al procesar el archivo:', error);
+              document.getElementById('error').textContent = 'Error: ' + error.message;
+              document.getElementById('error').style.display = 'block';
+              document.getElementById('filename-display').textContent = 'Error en archivo';
+            }
+          };
+          reader.onerror = function() {
+            console.error('Error al leer el archivo');
+            document.getElementById('error').textContent = 'Error al leer el archivo';
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('filename-display').textContent = 'Error en archivo';
+          };
+          reader.readAsText(file);
+        });
+
+        window.addEventListener('resize', function() {
+          map.resize();
+        });
+      } catch (error) {
+        console.error('Error inicializando el mapa:', error);
+        document.getElementById('error').textContent = 'Error inicializando el mapa: ' + error.message;
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+
+    // Validar e inicializar el mapa
+    if (mapboxAccessToken && mapboxAccessToken.startsWith('pk.')) {
+      console.log('Token encontrado en localStorage, inicializando mapa');
+      apiModal.classList.add('hidden');
+      initializeMap();
+    } else {
+      console.log('No se encontró token válido, mostrando modal');
+      apiModal.classList.remove('hidden');
+      apiSubmitButton.addEventListener('click', function() {
+        const apiKey = apiKeyInput.value.trim();
+        if (apiKey === '' || !apiKey.startsWith('pk.')) {
+          apiError.textContent = 'Por favor, ingrese una clave válida que comience con pk.';
+          apiError.style.display = 'block';
+          console.log('Clave API inválida');
+          return;
+        }
+
+        localStorage.setItem('mapboxAccessToken', apiKey);
+        mapboxAccessToken = apiKey;
+        apiModal.classList.add('hidden');
+        console.log('Clave API guardada, inicializando mapa');
+        initializeMap();
+      });
+
+      apiKeyInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+          apiSubmitButton.click();
+        }
+      });
+    }
+  </script>
+</body>
+</html>
