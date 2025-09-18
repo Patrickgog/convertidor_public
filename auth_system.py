@@ -31,7 +31,7 @@ class AuthSystem:
         # Configuración SMTP
         self.smtp_server = "smtp.gmail.com"
         self.smtp_port = 587
-        
+
         # Archivos de datos
         self.auth_codes_file = "auth_codes.json"
         self.authorized_users_file = "authorized_users.json"
@@ -100,12 +100,12 @@ class AuthSystem:
         """Envía código por email"""
         try:
             msg = MIMEMultipart()
-            msg['From'] = self.admin_email
+                msg['From'] = self.admin_email
             msg['To'] = email
             msg['Subject'] = "Código de acceso - App Topografía"
-            
-            body = f"""
-            <html>
+                
+                body = f"""
+                <html>
             <body>
                 <h2>🔐 Código de Acceso</h2>
                 <p>Tu código de acceso es: <strong>{code}</strong></p>
@@ -113,10 +113,10 @@ class AuthSystem:
                 <p>Si no solicitaste este código, ignora este email.</p>
                 <hr>
                 <p><small>App Topografía - Desarrollado por Patricio Sarmiento</small></p>
-            </body>
-            </html>
-            """
-            
+                </body>
+                </html>
+                """
+                
             msg.attach(MIMEText(body, 'html'))
             
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
@@ -130,7 +130,7 @@ class AuthSystem:
         except Exception as e:
             st.error(f"Error al enviar email: {e}")
             return False
-
+    
     def create_device_token(self, email):
         """Crea token HMAC para dispositivo"""
         timestamp = str(int(time.time()))
@@ -174,7 +174,14 @@ class AuthSystem:
         """Guarda token persistente con múltiples métodos"""
         success = False
         
-        # 1) Cookie (método principal)
+        # 1) Query parameter (más confiable para Cloud)
+        try:
+            st.query_params.token = token
+            success = True
+        except Exception:
+            pass
+        
+        # 2) Cookie (método secundario)
         if self.cookies:
             try:
                 self.cookies["auth_token"] = token
@@ -183,13 +190,6 @@ class AuthSystem:
                 success = True
             except Exception:
                 pass
-        
-        # 2) Query parameter (funciona en local y cloud)
-        try:
-            st.query_params.token = token
-            success = True
-        except Exception:
-            pass
         
         # 3) localStorage (solo local)
         if not self.is_cloud:
@@ -243,15 +243,15 @@ class AuthSystem:
                 pass
         
         return None
-
+    
     def check_session_timeout(self, email):
         """Verifica timeout de sesión"""
         if email in self.authorized_users:
             last_access = self.authorized_users[email].get('last_access', 0)
             timeout = st.secrets.get("SESSION_TIMEOUT", 86400)  # 24 horas por defecto
             return time.time() - last_access > timeout
-        return True
-
+            return True
+            
     def update_last_access(self, email):
         """Actualiza último acceso"""
         if email not in self.authorized_users:
@@ -289,8 +289,8 @@ def show_login_page():
                     auth.save_data()
                     
                     if auth.send_code_email(email, code):
-                        st.success(f"✅ Código enviado a {email}")
-                    else:
+                            st.success(f"✅ Código enviado a {email}")
+                        else:
                         st.error("❌ Error al enviar código")
                 else:
                     st.error("❌ Email no autorizado")
@@ -299,6 +299,8 @@ def show_login_page():
         
         if verify_code:
             code = st.text_input("🔢 Código de Acceso", placeholder="123456")
+            remember_device = st.checkbox("💾 Recordar este dispositivo", value=True)
+            
             if code and email:
                 if email in auth.auth_codes:
                     stored_code = auth.auth_codes[email]
@@ -307,9 +309,19 @@ def show_login_page():
                         stored_code['attempts'] < 3):
                         
                         # Autenticación exitosa
-                        st.session_state.authenticated = True
+                    st.session_state.authenticated = True
                         st.session_state.user_email = email
-                        st.session_state.auth_timestamp = time.time()
+                    st.session_state.auth_timestamp = time.time()
+                    st.session_state.remember_device = remember_device
+                        
+                        # Guardar token persistente si se seleccionó recordar
+                    if remember_device:
+                            token = auth.create_device_token(email)
+                            if auth.set_persistent_token(token):
+                            st.session_state.device_token = token
+                                st.success("✅ Dispositivo recordado")
+                            else:
+                                st.warning("⚠️ No se pudo recordar el dispositivo")
                         
                         # Limpiar código usado
                         del auth.auth_codes[email]
@@ -319,22 +331,14 @@ def show_login_page():
                         auth.update_last_access(email)
                         
                         st.success("✅ Autenticación exitosa")
-                        st.rerun()
-                    else:
-                        st.error("❌ Código inválido o expirado")
+                    st.rerun()
+                else:
+                    st.error("❌ Código inválido o expirado")
                         auth.auth_codes[email]['attempts'] += 1
                         auth.save_data()
                 else:
                     st.error("❌ No hay código pendiente para este email")
     
-    # Checkbox para recordar dispositivo
-    remember_device = st.checkbox("💾 Recordar este dispositivo", value=False)
-    if remember_device and st.session_state.get('authenticated'):
-        token = auth.create_device_token(st.session_state.user_email)
-        if auth.set_persistent_token(token):
-            st.success("✅ Dispositivo recordado")
-        else:
-            st.warning("⚠️ No se pudo recordar el dispositivo")
     
     # Footer
     st.markdown("---")
@@ -380,16 +384,48 @@ def check_authentication():
             except Exception:
                 pass
         
-        # 2) Token persistente
-        token = auth.get_persistent_token()
-        email_from_token = auth.validate_device_token(token)
-        if email_from_token and auth.is_user_authorized(email_from_token):
-            st.session_state.authenticated = True
-            st.session_state.user_email = email_from_token
-            st.session_state.auth_timestamp = time.time()
-            st.session_state.remember_device = True
-            st.session_state.device_token = token
-            return True
+        # 2) Token persistente - múltiples métodos
+        token = None
+        
+        # 2a) Query parameter (más confiable)
+        try:
+            token = st.query_params.get("token")
+        except Exception:
+            pass
+        
+        # 2b) Cookie
+        if not token and auth.cookies:
+            try:
+                token = auth.cookies.get("auth_token")
+            except Exception:
+                pass
+        
+        # 2c) localStorage (solo local)
+        if not token and not auth.is_cloud:
+            try:
+                components.html("""
+                <script>
+                const token = localStorage.getItem('auth_token') || '';
+                if (token && !window.location.search.includes('token=')) {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('token', token);
+                    window.location.replace(url.toString());
+                }
+                </script>
+                """, height=0)
+            except Exception:
+                pass
+        
+        # Validar token encontrado
+        if token:
+            email_from_token = auth.validate_device_token(token)
+            if email_from_token and auth.is_user_authorized(email_from_token):
+                st.session_state.authenticated = True
+                st.session_state.user_email = email_from_token
+                st.session_state.auth_timestamp = time.time()
+                st.session_state.remember_device = True
+                st.session_state.device_token = token
+                return True
 
     if not st.session_state.authenticated:
         show_login_page()
