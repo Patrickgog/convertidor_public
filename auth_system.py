@@ -14,6 +14,7 @@ import json
 import os
 from datetime import datetime, timedelta
 import uuid
+import streamlit.components.v1 as components
 
 # Importaciones de email con manejo de errores
 try:
@@ -38,6 +39,18 @@ class AuthSystem:
         self.devices_file = "remembered_devices.json"
         self.session_timeout = 3600  # 1 hora en segundos
         self._cookies = None
+        self.cookie_password = None
+        self.is_cloud = False
+        self.dev_token_file = ".dev_auth_token"  # compat 2025
+        self.dev_token_file_legacy = ".session_token.json"  # compat 2024/09 respaldo anterior
+        try:
+            appdata = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
+            if appdata:
+                self.dev_token_file_appdata = os.path.join(appdata, "App_Topografia", "session_token.json")
+            else:
+                self.dev_token_file_appdata = None
+        except Exception:
+            self.dev_token_file_appdata = None
         
         # Configuración de email con fallback para desarrollo local
         try:
@@ -45,6 +58,21 @@ class AuthSystem:
             self.admin_email = st.secrets.get("ADMIN_EMAIL", "")
             self.admin_password = st.secrets.get("ADMIN_PASSWORD", "")
             self.authorized_emails = st.secrets.get("AUTHORIZED_EMAILS", "").split(",")
+            try:
+                self.session_timeout = int(st.secrets.get("SESSION_TIMEOUT", self.session_timeout))
+            except Exception:
+                pass
+            # Password para cookie cifrada / token HMAC
+            try:
+                self.cookie_password = st.secrets.get("COOKIE_PASSWORD", None)
+            except Exception:
+                self.cookie_password = None
+            # Heurística de Cloud
+            try:
+                import os
+                self.is_cloud = os.path.exists("/mount") or bool(st.secrets.get("IS_CLOUD", False))
+            except Exception:
+                self.is_cloud = False
         except:
             # Fallback para desarrollo local
             try:
@@ -54,15 +82,69 @@ class AuthSystem:
                 self.admin_email = local_secrets.get("ADMIN_EMAIL", "test@example.com")
                 self.admin_password = local_secrets.get("ADMIN_PASSWORD", "test_password")
                 self.authorized_emails = local_secrets.get("AUTHORIZED_EMAILS", "test@gmail.com").split(",")
+                self.cookie_password = local_secrets.get("COOKIE_PASSWORD", None)
+                try:
+                    self.session_timeout = int(local_secrets.get("SESSION_TIMEOUT", self.session_timeout))
+                except Exception:
+                    pass
+                # Localhost
+                self.is_cloud = False
             except:
                 # Configuración de emergencia para testing
                 self.admin_email = "test@example.com"
                 self.admin_password = "test_password"
                 self.authorized_emails = ["test@gmail.com", "patricio@example.com"]
-        
-        # Configuración de email
+                self.cookie_password = None
+                self.is_cloud = False
+
+        # Configuración SMTP por defecto
         self.smtp_server = "smtp.gmail.com"
         self.smtp_port = 587
+
+    # =============================
+    # Helpers de query params (compatibilidad versiones Streamlit)
+    # =============================
+    @staticmethod
+    def _qp_set(key: str, value: str):
+        try:
+            st.query_params[key] = value
+            return
+        except Exception:
+            pass
+        try:
+            curr = st.experimental_get_query_params()
+            curr[key] = value
+            st.experimental_set_query_params(**curr)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _qp_get(key: str):
+        try:
+            val = st.query_params.get(key)
+            return val[0] if isinstance(val, list) else val
+        except Exception:
+            pass
+        try:
+            curr = st.experimental_get_query_params()
+            val = curr.get(key)
+            return val[0] if isinstance(val, list) else val
+        except Exception:
+            return None
+
+    @staticmethod
+    def _qp_clear():
+        try:
+            st.query_params.clear()
+            return
+        except Exception:
+            pass
+        try:
+            st.experimental_set_query_params()
+        except Exception:
+            pass
+        
+        # fin helpers query params
 
     # =============================
     # Recordar dispositivo (token)
@@ -73,15 +155,8 @@ class AuthSystem:
                 return self._cookies
             if EncryptedCookieManager is None:
                 return None
-            password = None
-            try:
-                password = st.secrets.get("COOKIE_PASSWORD", None)
-            except Exception:
-                password = None
-            self._cookies = EncryptedCookieManager(prefix="auth_topografia", password=password or "dev-cookie-password")
-            # Si no está listo, devolver None para fallback a query params
-            if not self._cookies.ready():
-                return None
+            self._cookies = EncryptedCookieManager(prefix="auth_topografia", password=self.cookie_password or "dev-cookie-password")
+            # Devolver siempre el objeto; el caller puede esperar a que esté listo
             return self._cookies
         except Exception:
             return None
@@ -103,6 +178,14 @@ class AuthSystem:
             pass
 
     def create_device_token(self, email, days_valid=30):
+        # Si hay COOKIE_PASSWORD, usar token stateless HMAC (no requiere archivo)
+        secret = self.cookie_password
+        if secret:
+            exp = int(time.time() + days_valid * 86400)
+            payload = f"{email}|{exp}"
+            sig = hashlib.sha256((payload + str(secret)).encode('utf-8')).hexdigest()
+            return f"{email}.{exp}.{sig}"
+        # Fallback: token con estado en archivo
         raw = f"{email}-{time.time()}-{uuid.uuid4()}"
         token = hashlib.sha256(raw.encode('utf-8')).hexdigest()
         devices = self._load_devices()
@@ -117,12 +200,24 @@ class AuthSystem:
     def validate_device_token(self, token):
         if not token:
             return None
+        # Intentar modo stateless (token HMAC)
+        secret = self.cookie_password
+        if secret and isinstance(token, str) and token.count('.') == 2:
+            try:
+                email, exp_str, sig = token.split('.')
+                exp = int(exp_str)
+                expected = hashlib.sha256((f"{email}|{exp}" + str(secret)).encode('utf-8')).hexdigest()
+                if sig == expected and time.time() < exp:
+                    return email
+            except Exception:
+                pass
+            return None
+        # Fallback: modo con archivo
         devices = self._load_devices()
         info = devices.get(token)
         if not info:
             return None
         if time.time() > info.get('expires_at', 0):
-            # Expirado: limpiar
             try:
                 del devices[token]
                 self._save_devices(devices)
@@ -150,31 +245,102 @@ class AuthSystem:
         if cookies is not None:
             try:
                 cookies["auth_token"] = token
+                # Persistir por el máximo permitido (30 días) si el gestor lo soporta
+                try:
+                    cookies.set("auth_token", token, max_age_days=30)
+                except Exception:
+                    pass
                 cookies.save()
+                # En entorno local (no Cloud), refuerza persistencia manteniendo ?token=...
+                if not self.is_cloud:
+                    self._qp_set("token", token)
+                    # Guardar también en localStorage del navegador
+                    try:
+                        components.html(f"""
+                        <script>
+                        try {{ localStorage.setItem('auth_token', '{token}'); }} catch(e) {{}}
+                        </script>
+                        """, height=0)
+                    except Exception:
+                        pass
+                    # Guardar token en archivo local como último respaldo en dev (varias ubicaciones por compatibilidad)
+                    try:
+                        with open(self.dev_token_file, 'w', encoding='utf-8') as f:
+                            f.write(token)
+                    except Exception:
+                        pass
+                    # Legacy
+                    try:
+                        with open(self.dev_token_file_legacy, 'w', encoding='utf-8') as f:
+                            f.write(token)
+                    except Exception:
+                        pass
+                    # AppData
+                    try:
+                        if self.dev_token_file_appdata:
+                            os.makedirs(os.path.dirname(self.dev_token_file_appdata), exist_ok=True)
+                            with open(self.dev_token_file_appdata, 'w', encoding='utf-8') as f:
+                                f.write(token)
+                    except Exception:
+                        pass
                 return True
             except Exception:
                 return False
-        # Fallback a query params si no hay cookies
-        try:
-            st.query_params["token"] = token
-        except Exception:
-            pass
         return False
 
     def get_persistent_token(self):
         cookies = self._get_cookies()
         if cookies is not None:
             try:
-                return cookies.get("auth_token")
+                val = cookies.get("auth_token")
+                if val:
+                    return val
+                # Intentar leer desde session_state si existe (resiliencia a recargas)
+                try:
+                    return st.session_state.get("device_token")
+                except Exception:
+                    return None
             except Exception:
                 return None
+        # Lectura por query param en local (o si se activa explícitamente)
+        allow_query = False
         try:
-            params = st.query_params or {}
-            token = params.get('token')
-            token = token[0] if isinstance(token, list) else token
-            return token
+            allow_query = bool(st.secrets.get("ALLOW_QUERY_TOKEN", False))
         except Exception:
-            return None
+            allow_query = False
+        if (not self.is_cloud) or allow_query:
+            token = self._qp_get("token")
+            if token:
+                return token
+            # Último respaldo: archivo local en dev
+            # AppData primero
+            try:
+                if self.dev_token_file_appdata and os.path.exists(self.dev_token_file_appdata):
+                    with open(self.dev_token_file_appdata, 'r', encoding='utf-8') as f:
+                        t = f.read().strip()
+                        if t:
+                            return t
+            except Exception:
+                pass
+            # Archivo nuevo
+            try:
+                if os.path.exists(self.dev_token_file):
+                    with open(self.dev_token_file, 'r', encoding='utf-8') as f:
+                        t = f.read().strip()
+                        if t:
+                            return t
+            except Exception:
+                pass
+            # Legacy 2024
+            try:
+                if os.path.exists(self.dev_token_file_legacy):
+                    with open(self.dev_token_file_legacy, 'r', encoding='utf-8') as f:
+                        t = f.read().strip()
+                        if t:
+                            return t
+            except Exception:
+                pass
+        return None
 
     def clear_persistent_token(self):
         cookies = self._get_cookies()
@@ -185,10 +351,33 @@ class AuthSystem:
                     cookies.save()
             except Exception:
                 pass
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
+        # Limpiar query params en local
+        if not self.is_cloud:
+            self._qp_clear()
+            try:
+                components.html("""
+                <script>
+                try { localStorage.removeItem('auth_token'); } catch(e) {}
+                </script>
+                """, height=0)
+            except Exception:
+                pass
+            # Eliminar archivos locales
+            try:
+                if os.path.exists(self.dev_token_file):
+                    os.remove(self.dev_token_file)
+            except Exception:
+                pass
+            try:
+                if os.path.exists(self.dev_token_file_legacy):
+                    os.remove(self.dev_token_file_legacy)
+            except Exception:
+                pass
+            try:
+                if self.dev_token_file_appdata and os.path.exists(self.dev_token_file_appdata):
+                    os.remove(self.dev_token_file_appdata)
+            except Exception:
+                pass
     
     def generate_access_code(self, length=6):
         """Genera código de acceso alfanumérico"""
@@ -424,6 +613,14 @@ Soporte: L-V 8AM-6PM, S 9AM-2PM (GMT-5)
 def show_login_page():
     """Muestra página de autenticación"""
     auth = AuthSystem()
+    # Asegurar que el gestor de cookies está listo (requisito del componente)
+    cookies = auth._get_cookies()
+    if cookies is not None:
+        try:
+            if not cookies.ready():
+                st.stop()  # un rerun para inicializar correctamente el componente
+        except Exception:
+            pass
     
     st.markdown("""
     <div style="text-align: center; padding: 40px;">
@@ -481,6 +678,7 @@ def show_login_page():
         )
 
         remember_device = st.checkbox("Recordar este dispositivo", help="No se te pedirá el código en futuros accesos desde este equipo.")
+        st.info("Si activas esta opción, tu sesión se mantendrá por 30 días en este navegador. No se solicitará el código hasta que cierres sesión, borres las cookies o caduque el plazo.")
 
         if st.button("🚀 Acceder", type="primary", use_container_width=True):
             if email_verify and access_code:
@@ -494,9 +692,7 @@ def show_login_page():
                         try:
                             token = auth.create_device_token(email_verify)
                             st.session_state.device_token = token
-                            # Cookies primero, fallback a query param
-                            if not auth.set_persistent_token(token):
-                                st.query_params["token"] = token
+                            auth.set_persistent_token(token)
                         except Exception:
                             pass
                     st.success("✅ ¡Acceso autorizado!")
@@ -525,10 +721,31 @@ def check_authentication():
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
 
-    # Auto-login por token recordado (si no autenticado)
+    # Auto-login por token recordado (si no autenticado).
     if not st.session_state.authenticated:
         try:
-            token = auth.get_persistent_token()
+            # 1) Primero intenta token en query (local) para máxima robustez
+            token = auth._qp_get("token") if (not auth.is_cloud) else None
+            # 1b) Intentar localStorage (solo local)
+            if (not token) and (not auth.is_cloud):
+                try:
+                    components.html("""
+                    <script>
+                    const t = localStorage.getItem('auth_token') || '';
+                    const pyBridge = window.parent || window;
+                    if (t) {
+                      const url = new URL(window.location.href);
+                      if (!url.searchParams.get('token')) {
+                        url.searchParams.set('token', t);
+                        window.location.replace(url.toString());
+                      }
+                    }
+                    </script>
+                    """, height=0)
+                except Exception:
+                    pass
+            if not token:
+                token = auth.get_persistent_token()
             email_from_token = auth.validate_device_token(token)
             if email_from_token and auth.is_user_authorized(email_from_token):
                 st.session_state.authenticated = True
@@ -537,6 +754,26 @@ def check_authentication():
                 st.session_state.remember_device = True
                 st.session_state.device_token = token
                 return True
+            # 2) DEV OVERRIDE: autologin por secrets en local si todo lo demás falla
+            try:
+                dev_email = None
+                try:
+                    dev_email = st.secrets.get("DEV_AUTOLOGIN_EMAIL", None)
+                except Exception:
+                    dev_email = None
+                if not dev_email:
+                    import toml
+                    with open("secrets_local.toml", "r") as f:
+                        dev_email = toml.load(f).get("DEV_AUTOLOGIN_EMAIL", None)
+                if dev_email and (not auth.is_cloud) and auth.is_user_authorized(dev_email):
+                    st.session_state.authenticated = True
+                    st.session_state.user_email = dev_email
+                    st.session_state.auth_timestamp = time.time()
+                    st.session_state.remember_device = True
+                    st.session_state.device_token = "dev_override"
+                    return True
+            except Exception:
+                pass
         except Exception:
             pass
 
