@@ -446,9 +446,39 @@ def show_user_info():
         with st.sidebar:
             st.success(f"✅ Sesión activa: {st.session_state.user_email}")
             if st.button("🚪 Cerrar Sesión"):
+                # Limpiar sesión
                 st.session_state.authenticated = False
                 st.session_state.user_email = None
                 st.session_state.auth_timestamp = None
                 st.session_state.remember_device = False
                 st.session_state.device_token = None
+                
+                # Limpiar token persistente
+                auth = AuthSystem()
+                try:
+                    # Limpiar query parameter
+                    if "token" in st.query_params:
+                        del st.query_params.token
+                except Exception:
+                    pass
+                
+                # Limpiar cookie
+                if auth.cookies:
+                    try:
+                        auth.cookies.delete("auth_token")
+                        auth.cookies.save()
+                    except Exception:
+                        pass
+                
+                # Limpiar localStorage (solo local)
+                if not auth.is_cloud:
+                    try:
+                        components.html("""
+                        <script>
+                        localStorage.removeItem('auth_token');
+                        </script>
+                        """, height=0)
+                    except Exception:
+                        pass
+                
                 st.rerun()
