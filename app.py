@@ -1938,7 +1938,7 @@ def main():
                     try:
                         import pandas as pd
                         # Usar read_clipboard para leer datos tabulares
-                        df_clipboard = pd.read_clipboard(header=None, sep="\s*[,;\t]\s*")
+                        df_clipboard = pd.read_clipboard(header=None, sep=r"\s*[,;\t]\s*")
                         # Convertir el dataframe a texto para mostrarlo en el área de texto
                         pasted_text = df_clipboard.to_csv(sep='\t', index=False, header=False)
                         st.session_state.topo_paste = pasted_text
