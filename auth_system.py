@@ -266,9 +266,6 @@ def show_login_page():
     
     auth = AuthSystem()
     
-    # Mostrar información de usuarios autorizados
-    st.info("📧 **Emails autorizados:**\n" + "\n".join([f"• {email}" for email in auth.authorized_emails]))
-    
     # Formulario de login
     with st.form("login_form"):
         email = st.text_input("📧 Email", placeholder="tu@email.com")
@@ -339,7 +336,7 @@ def show_login_page():
                     st.error("❌ Código inválido o expirado")
                         auth.auth_codes[email]['attempts'] += 1
                         auth.save_data()
-                else:
+            else:
                     st.error("❌ No hay código pendiente para este email")
     
     
