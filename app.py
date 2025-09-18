@@ -1695,6 +1695,11 @@ def main():
         st.session_state["output_epsg"] = st.number_input("EPSG de salida", value=int(st.session_state["output_epsg"]),
                                                           min_value=2000, max_value=99999, step=1)
         st.session_state["group_by"] = st.selectbox("Agrupar capas por", options=["type", "layer"], index=(0 if st.session_state["group_by"] == "type" else 1))
+        # Ayuda contextual de agrupación
+        if st.session_state["group_by"] == "type":
+            st.info("Modo TYPE: agrupa por tipo geométrico. Verás capas como Puntos, Líneas/Polilíneas, Textos, Círculos, Bloques.")
+        else:
+            st.info("Modo LAYER: reproduce las capas originales del DXF. Cada capa del DXF aparece como una capa activable en el visor.")
         
         # Configuración de tipo de mapa HTML
         st.markdown("**Tipo de Mapa HTML**")
