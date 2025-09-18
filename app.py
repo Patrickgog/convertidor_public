@@ -1383,6 +1383,106 @@ def create_mapbox_html(geojson_data, title="Visor GeoJSON Profesional", folder_n
     return mapbox_html
 
 
+def create_leaflet_grouped_html(geojson_data, title="Visor GeoJSON Profesional", grouping_mode="type"):
+    """Genera HTML con Leaflet y control de capas agrupadas por 'type' o 'layer'."""
+    try:
+        gj_obj = json.loads(json.dumps(geojson_data))
+        if isinstance(gj_obj, dict) and gj_obj.get("type") == "FeatureCollection":
+            for f in gj_obj.get("features", []):
+                if not isinstance(f, dict):
+                    continue
+                props = f.setdefault("properties", {}) if isinstance(f.get("properties"), dict) else {}
+                if "properties" not in f:
+                    f["properties"] = props
+                if "type" in props and isinstance(props["type"], str):
+                    props["type"] = props["type"].lower()
+                if "layer" not in props:
+                    props["layer"] = "default"
+        geojson_str = json.dumps(gj_obj, ensure_ascii=False)
+    except Exception:
+        geojson_str = json.dumps(geojson_data, ensure_ascii=False)
+
+    group_key_js = "(f.properties && f.properties.layer) ? String(f.properties.layer) : 'SinGrupo'" if str(grouping_mode).lower() == "layer" else "(f.properties && f.properties.type) ? String(f.properties.type) : 'SinGrupo'"
+
+    html = f"""<!DOCTYPE html>
+<html lang=\"es\">
+<head>
+  <meta charset=\"UTF-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <title>{title}</title>
+  <link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" />
+  <script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>
+  <style> html, body {{ height: 100%; margin: 0; }} #map {{ height: 100vh; }} .leaflet-control-layers-expanded{{ max-height:65vh; overflow:auto; }} </style>
+  </head>
+<body>
+  <div id=\"map\"></div>
+  <script>
+    const map = L.map('map', {{ preferCanvas: true }});
+    const calles = L.tileLayer('https://{{{{s}}}}.tile.openstreetmap.org/{{{{z}}}}/{{{{x}}}}/{{{{y}}}}.png', {{ attribution: 'OpenStreetMap', maxZoom: 19 }});
+    const positron = L.tileLayer('https://{{{{s}}}}.basemaps.cartocdn.com/light_all/{{{{z}}}}/{{{{x}}}}/{{{{y}}}}{{{{r}}}}.png', {{ attribution: 'CartoDB', subdomains: 'abcd', maxZoom: 19 }});
+    const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{{{z}}}}/{{{{y}}}}/{{{{x}}}}', {{ attribution: 'Esri', maxZoom: 19 }});
+    const baseLayers = {{ \"Calles\": calles, \"Positron\": positron, \"Satelital\": satelite }};
+    positron.addTo(map);
+
+    const data = {geojson_str};
+    const grouped = {{}};
+    if (data && data.features) {{
+      data.features.forEach(f => {{
+        const key = {group_key_js};
+        if (!grouped[key]) grouped[key] = {{ nonText: [], points: [], texts: [] }};
+        const g = grouped[key];
+        const t = (f.properties && f.properties.type) ? f.properties.type : '';
+        if (t === 'text') g.texts.push(f);
+        else if (f.geometry && f.geometry.type === 'Point') g.points.push(f);
+        else g.nonText.push(f);
+      }});
+    }}
+
+    const overlayMaps = {{}};
+    Object.keys(grouped).forEach(key => {{
+      const fg = L.layerGroup();
+      const parts = grouped[key];
+      if (parts.nonText && parts.nonText.length) {{
+        const gj = L.geoJSON({{ type: 'FeatureCollection', features: parts.nonText }});
+        gj.addTo(fg);
+      }}
+      if (parts.points) {{
+        parts.points.forEach(feat => {{
+          try {{
+            const c = feat.geometry.coordinates; const lon = c[0], lat = c[1];
+            L.circleMarker([lat, lon], {{ radius: 3, color: '#2c7fb8', fillOpacity: 0.9 }}).addTo(fg);
+          }} catch(e) {{}}
+        }});
+      }}
+      if (parts.texts) {{
+        parts.texts.forEach(feat => {{
+          try {{
+            const c = feat.geometry.coordinates; const lon = c[0], lat = c[1];
+            const label = (feat.properties && feat.properties.text) ? String(feat.properties.text) : '';
+            if (label) L.marker([lat, lon], {{ icon: L.divIcon({{ className: '', html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${{label}}</div>` }}) }}).addTo(fg);
+          }} catch(e) {{}}
+        }});
+      }}
+      overlayMaps[key] = fg;
+    }});
+
+    Object.values(overlayMaps).forEach(l => l.addTo(map));
+    L.control.layers(baseLayers, overlayMaps, {{ position: 'topright', collapsed: false }}).addTo(map);
+
+    try {{
+      const allBounds = [];
+      Object.values(overlayMaps).forEach(l => {{ if (l.getBounds) try {{ allBounds.push(l.getBounds()); }} catch(e) {{}} }});
+      if (allBounds.length) {{
+        let merged = allBounds[0];
+        for (let i=1;i<allBounds.length;i++) merged.extend(allBounds[i]);
+        map.fitBounds(merged);
+      }} else {{ map.setView([0,0], 2); }}
+    }} catch(e) {{ map.setView([0,0], 2); }}
+  </script>
+</body>
+</html>"""
+    return html
+
 def render_map(geojson_data, group_by: str = "type"):
     m = folium.Map(location=[-2.0, -79.0], zoom_start=10, tiles=None, prefer_canvas=True)
     folium.TileLayer("OpenStreetMap", name="Calles").add_to(m)
@@ -1661,7 +1761,14 @@ def main():
     except Exception:
         # En local puede no existir secrets.toml; mantener valor actual
         pass
-    st.caption("Carga archivos, define el sistema de referencia y descarga resultados geoespaciales.")
+    # Título principal con icono GPS
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:12px;margin:10px 0 4px 0;">
+      <span style="font-size:28px;">📡</span>
+      <h1 style="margin:0;color:#0d6efd;">CONVERSOR UNIVERSAL PROFESIONAL</h1>
+    </div>
+    <div style="color:#666;margin-bottom:12px;">Carga archivos, define el sistema de referencia y descarga resultados geoespaciales.</div>
+    """, unsafe_allow_html=True)
 
     with st.sidebar:
         st.header("Configuración")
@@ -2665,14 +2772,7 @@ def main():
                 if html_map_type == "mapbox":
                     st.session_state["project_map_html"] = create_mapbox_html(strip_z_from_geojson(geojson_emb), title=f"{st.session_state.get('base_name','Proyecto')} - Map Viewer", folder_name=st.session_state.get("output_folder","Proyecto"), grouping_mode=st.session_state.get("group_by","type"))
                 else:
-                    leaf_tpl = """<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /><title>__TITLE__</title><link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" /><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } </style></head><body><div id=\"map\"></div><script>const map=L.map('map',{preferCanvas:true});const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'});osm.addTo(map);const data=__GEOJSON__;if(data && data.features){L.geoJSON(data).addTo(map);}const b=__BOUNDS__;try{map.fitBounds([[b[0][0],b[0][1]],[b[1][0],b[1][1]]],{padding:[20,20]});}catch(e){map.setView([__CENTER_LAT__,__CENTER_LON__],12);} </script></body></html>"""
-                    st.session_state["project_map_html"] = (leaf_tpl
-                        .replace("__TITLE__", f"{st.session_state.get('base_name','Proyecto')} - Map Viewer")
-                        .replace("__GEOJSON__", json.dumps(strip_z_from_geojson(geojson_emb)))
-                        .replace("__BOUNDS__", json.dumps(b))
-                        .replace("__CENTER_LAT__", str(center_lat))
-                        .replace("__CENTER_LON__", str(center_lon))
-                    )
+                    st.session_state["project_map_html"] = create_leaflet_grouped_html(strip_z_from_geojson(geojson_emb), title=f"{st.session_state.get('base_name','Proyecto')} - Map Viewer", grouping_mode=st.session_state.get("group_by","type"))
             except Exception:
                 pass
             # Botón único: Descargar Resultados al sistema de archivos (solo local)
@@ -2812,23 +2912,23 @@ def main():
             base_name_save = st.session_state.get("base_name", "Proyecto1")
             html_str = st.session_state.get("project_map_html")
             zip_buf = io.BytesIO()
+            root = f"{base_name_save}"
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
-                if outputs_local.get("kmz_bytes"): zf_.writestr(f"{base_name_save}.kmz", outputs_local["kmz_bytes"])
-                if outputs_local.get("geojson_bytes"): zf_.writestr(f"{base_name_save}.geojson", outputs_local["geojson_bytes"])
-                if outputs_local.get("json_bytes"): zf_.writestr(f"{base_name_save}.json", outputs_local["json_bytes"])
-                if html_str: zf_.writestr(f"{base_name_save}_map.html", html_str.encode("utf-8"))
-                # Incluir el DXF original subido
+                if outputs_local.get("kmz_bytes"): zf_.writestr(f"{root}/{base_name_save}.kmz", outputs_local["kmz_bytes"])
+                if outputs_local.get("geojson_bytes"): zf_.writestr(f"{root}/{base_name_save}.geojson", outputs_local["geojson_bytes"])
+                if outputs_local.get("json_bytes"): zf_.writestr(f"{root}/{base_name_save}.json", outputs_local["json_bytes"])
+                if html_str: zf_.writestr(f"{root}/{base_name_save}_map.html", html_str.encode("utf-8"))
                 try:
                     dxf_bytes_in = st.session_state.get("input_dxf_bytes")
                     if dxf_bytes_in:
-                        zf_.writestr(f"{base_name_save}.dxf", dxf_bytes_in)
+                        zf_.writestr(f"{root}/{base_name_save}.dxf", dxf_bytes_in)
                 except Exception:
                     pass
                 shp_src = outputs_local.get("shp_dir")
                 if shp_src:
                     try:
                         for f in Path(shp_src).glob("*"):
-                            zf_.write(f, arcname=f"Shapes/{f.name}")
+                            zf_.write(f, arcname=f"{root}/Shapes/{f.name}")
                     except Exception:
                         pass
             zip_buf.seek(0)
@@ -3018,13 +3118,7 @@ def main():
                 if html_map_type == "mapbox":
                     st.session_state["project_map_html"] = create_mapbox_html(strip_z_from_geojson(geojson_emb), title="GPX - Map Viewer", folder_name=st.session_state.get("gpx_output_folder","Proyecto"), grouping_mode="type")
                 else:
-                    leaf_tpl = """<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /><title>GPX - Map Viewer</title><link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" /><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } </style></head><body><div id=\"map\"></div><script>const map=L.map('map',{preferCanvas:true});const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'});osm.addTo(map);const data=__GEOJSON__;if(data && data.features){L.geoJSON(data).addTo(map);}const b=__BOUNDS__;try{map.fitBounds([[b[0][0],b[0][1]],[b[1][0],b[1][1]]],{padding:[20,20]});}catch(e){map.setView([__CENTER_LAT__,__CENTER_LON__],12);} </script></body></html>"""
-                    st.session_state["project_map_html"] = (leaf_tpl
-                        .replace("__GEOJSON__", json.dumps(strip_z_from_geojson(geojson_emb)))
-                        .replace("__BOUNDS__", json.dumps(b))
-                        .replace("__CENTER_LAT__", str(center_lat))
-                        .replace("__CENTER_LON__", str(center_lon))
-                    )
+                    st.session_state["project_map_html"] = create_leaflet_grouped_html(strip_z_from_geojson(geojson_emb), title="GPX - Map Viewer", grouping_mode="type")
             except Exception:
                 pass
             # Guardado local (solo local)
@@ -3215,16 +3309,17 @@ def main():
             gpx_outputs = st.session_state["gpx_outputs"]
             html_str = st.session_state.get("project_map_html")
             zip_buf = io.BytesIO()
+            root = f"{base_name}"
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
-                if gpx_outputs.get("kmz_bytes"): zf_.writestr(f"{base_name}.kmz", gpx_outputs["kmz_bytes"])
-                if gpx_outputs.get("geojson_bytes"): zf_.writestr(f"{base_name}.geojson", gpx_outputs["geojson_bytes"])
-                if gpx_outputs.get("json_bytes"): zf_.writestr(f"{base_name}.json", gpx_outputs["json_bytes"])
-                if html_str: zf_.writestr(f"{base_name}_map.html", html_str.encode("utf-8"))
+                if gpx_outputs.get("kmz_bytes"): zf_.writestr(f"{root}/{base_name}.kmz", gpx_outputs["kmz_bytes"])
+                if gpx_outputs.get("geojson_bytes"): zf_.writestr(f"{root}/{base_name}.geojson", gpx_outputs["geojson_bytes"])
+                if gpx_outputs.get("json_bytes"): zf_.writestr(f"{root}/{base_name}.json", gpx_outputs["json_bytes"])
+                if html_str: zf_.writestr(f"{root}/{base_name}_map.html", html_str.encode("utf-8"))
                 shp_src = gpx_outputs.get("shp_dir")
                 if shp_src:
                     try:
                         for f in Path(shp_src).glob("*"):
-                            zf_.write(f, arcname=f"Shapes/{f.name}")
+                            zf_.write(f, arcname=f"{root}/Shapes/{f.name}")
                     except Exception:
                         pass
             zip_buf.seek(0)
@@ -3485,13 +3580,7 @@ def main():
                 if html_map_type == "mapbox":
                     st.session_state["project_map_html"] = create_mapbox_html(strip_z_from_geojson(geojson_emb), title="KML/KMZ - Map Viewer", folder_name=st.session_state.get("kml_output_folder","Proyecto"), grouping_mode="type")
                 else:
-                    leaf_tpl = """<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /><title>KML/KMZ - Map Viewer</title><link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" /><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } </style></head><body><div id=\"map\"></div><script>const map=L.map('map',{preferCanvas:true});const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'});osm.addTo(map);const data=__GEOJSON__;if(data && data.features){L.geoJSON(data).addTo(map);}const b=__BOUNDS__;try{map.fitBounds([[b[0][0],b[0][1]],[b[1][0],b[1][1]]],{padding:[20,20]});}catch(e){map.setView([__CENTER_LAT__,__CENTER_LON__],12);} </script></body></html>"""
-                    st.session_state["project_map_html"] = (leaf_tpl
-                        .replace("__GEOJSON__", json.dumps(strip_z_from_geojson(geojson_emb)))
-                        .replace("__BOUNDS__", json.dumps(b))
-                        .replace("__CENTER_LAT__", str(center_lat))
-                        .replace("__CENTER_LON__", str(center_lon))
-                    )
+                    st.session_state["project_map_html"] = create_leaflet_grouped_html(strip_z_from_geojson(geojson_emb), title="KML/KMZ - Map Viewer", grouping_mode="type")
             except Exception:
                 pass
             # Guardado local (solo local)
@@ -3691,16 +3780,17 @@ def main():
             kmz_bytes = kml_outputs.get("kmz_bytes", b"")
             html_str = st.session_state.get("project_map_html")
             zip_buf = io.BytesIO()
+            root = f"{base_name}"
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
-                if kmz_bytes: zf_.writestr(f"{base_name}.kmz", kmz_bytes)
-                if kml_outputs.get("geojson_bytes"): zf_.writestr(f"{base_name}.geojson", kml_outputs["geojson_bytes"])
-                if kml_outputs.get("json_bytes"): zf_.writestr(f"{base_name}.json", kml_outputs["json_bytes"])
-                if html_str: zf_.writestr(f"{base_name}_map.html", html_str.encode("utf-8"))
+                if kmz_bytes: zf_.writestr(f"{root}/{base_name}.kmz", kmz_bytes)
+                if kml_outputs.get("geojson_bytes"): zf_.writestr(f"{root}/{base_name}.geojson", kml_outputs["geojson_bytes"])
+                if kml_outputs.get("json_bytes"): zf_.writestr(f"{root}/{base_name}.json", kml_outputs["json_bytes"])
+                if html_str: zf_.writestr(f"{root}/{base_name}_map.html", html_str.encode("utf-8"))
                 shp_src = kml_outputs.get("shp_dir")
                 if shp_src:
                     try:
                         for f in Path(shp_src).glob("*"):
-                            zf_.write(f, arcname=f"Shapes/{f.name}")
+                            zf_.write(f, arcname=f"{root}/Shapes/{f.name}")
                     except Exception:
                         pass
             zip_buf.seek(0)
