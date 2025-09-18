@@ -10,3 +10,6 @@ numpy
 gpxpy
 fastkml
 
+# Cookies persistentes para "Recordar este dispositivo"
+streamlit-cookies-manager
+
