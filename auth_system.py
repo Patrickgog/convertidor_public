@@ -381,8 +381,8 @@ def check_authentication():
 
     # Auto-login por token recordado
     if not st.session_state.authenticated:
-        # 1) DEV OVERRIDE: autologin por secrets en local
-        if not auth.is_cloud:
+        # 1) DEV OVERRIDE: autologin por secrets en local (solo si no se cerró sesión manualmente)
+        if not auth.is_cloud and not st.session_state.get('session_closed', False):
             try:
                 dev_email = None
                 try:
@@ -474,6 +474,7 @@ def show_user_info():
                 st.session_state.auth_timestamp = None
                 st.session_state.remember_device = False
                 st.session_state.device_token = None
+                st.session_state.session_closed = True  # Marcar que se cerró manualmente
                 
                 # Limpiar token persistente
                 auth = AuthSystem()
