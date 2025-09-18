@@ -31,7 +31,7 @@ class AuthSystem:
         # Configuración SMTP
         self.smtp_server = "smtp.gmail.com"
         self.smtp_port = 587
-
+        
         # Archivos de datos
         self.auth_codes_file = "auth_codes.json"
         self.authorized_users_file = "authorized_users.json"
@@ -100,12 +100,12 @@ class AuthSystem:
         """Envía código por email"""
         try:
             msg = MIMEMultipart()
-                msg['From'] = self.admin_email
+            msg['From'] = self.admin_email
             msg['To'] = email
             msg['Subject'] = "Código de acceso - App Topografía"
-                
-                body = f"""
-                <html>
+            
+            body = f"""
+            <html>
             <body>
                 <h2>🔐 Código de Acceso</h2>
                 <p>Tu código de acceso es: <strong>{code}</strong></p>
@@ -113,10 +113,10 @@ class AuthSystem:
                 <p>Si no solicitaste este código, ignora este email.</p>
                 <hr>
                 <p><small>App Topografía - Desarrollado por Patricio Sarmiento</small></p>
-                </body>
-                </html>
-                """
-                
+            </body>
+            </html>
+            """
+            
             msg.attach(MIMEText(body, 'html'))
             
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
@@ -130,7 +130,7 @@ class AuthSystem:
         except Exception as e:
             st.error(f"Error al enviar email: {e}")
             return False
-    
+
     def create_device_token(self, email):
         """Crea token HMAC para dispositivo"""
         timestamp = str(int(time.time()))
@@ -243,15 +243,15 @@ class AuthSystem:
                 pass
         
         return None
-    
+
     def check_session_timeout(self, email):
         """Verifica timeout de sesión"""
         if email in self.authorized_users:
             last_access = self.authorized_users[email].get('last_access', 0)
             timeout = st.secrets.get("SESSION_TIMEOUT", 86400)  # 24 horas por defecto
             return time.time() - last_access > timeout
-            return True
-            
+        return True
+
     def update_last_access(self, email):
         """Actualiza último acceso"""
         if email not in self.authorized_users:
@@ -289,8 +289,8 @@ def show_login_page():
                     auth.save_data()
                     
                     if auth.send_code_email(email, code):
-                            st.success(f"✅ Código enviado a {email}")
-                        else:
+                        st.success(f"✅ Código enviado a {email}")
+                    else:
                         st.error("❌ Error al enviar código")
                 else:
                     st.error("❌ Email no autorizado")
@@ -309,16 +309,16 @@ def show_login_page():
                         stored_code['attempts'] < 3):
                         
                         # Autenticación exitosa
-                    st.session_state.authenticated = True
+                        st.session_state.authenticated = True
                         st.session_state.user_email = email
-                    st.session_state.auth_timestamp = time.time()
-                    st.session_state.remember_device = remember_device
+                        st.session_state.auth_timestamp = time.time()
+                        st.session_state.remember_device = remember_device
                         
                         # Guardar token persistente si se seleccionó recordar
-                    if remember_device:
+                        if remember_device:
                             token = auth.create_device_token(email)
                             if auth.set_persistent_token(token):
-                            st.session_state.device_token = token
+                                st.session_state.device_token = token
                                 st.success("✅ Dispositivo recordado")
                             else:
                                 st.warning("⚠️ No se pudo recordar el dispositivo")
@@ -331,14 +331,13 @@ def show_login_page():
                         auth.update_last_access(email)
                         
                         st.success("✅ Autenticación exitosa")
-                    st.rerun()
-                else:
-                    st.error("❌ Código inválido o expirado")
+                        st.rerun()
+                    else:
+                        st.error("❌ Código inválido o expirado")
                         auth.auth_codes[email]['attempts'] += 1
                         auth.save_data()
-            else:
+                else:
                     st.error("❌ No hay código pendiente para este email")
-    
     
     # Footer
     st.markdown("---")
@@ -447,9 +446,39 @@ def show_user_info():
         with st.sidebar:
             st.success(f"✅ Sesión activa: {st.session_state.user_email}")
             if st.button("🚪 Cerrar Sesión"):
+                # Limpiar sesión
                 st.session_state.authenticated = False
                 st.session_state.user_email = None
                 st.session_state.auth_timestamp = None
                 st.session_state.remember_device = False
                 st.session_state.device_token = None
+                
+                # Limpiar token persistente
+                auth = AuthSystem()
+                try:
+                    # Limpiar query parameter
+                    if "token" in st.query_params:
+                        del st.query_params.token
+                except Exception:
+                    pass
+                
+                # Limpiar cookie
+                if auth.cookies:
+                    try:
+                        auth.cookies.delete("auth_token")
+                        auth.cookies.save()
+                    except Exception:
+                        pass
+                
+                # Limpiar localStorage (solo local)
+                if not auth.is_cloud:
+                    try:
+                        components.html("""
+                        <script>
+                        localStorage.removeItem('auth_token');
+                        </script>
+                        """, height=0)
+                    except Exception:
+                        pass
+                
                 st.rerun()
