@@ -1643,6 +1643,9 @@ def main():
         # Vista previa eliminada por solicitud del usuario
         pass
     # ...existing code...
+    import os
+    import io
+    import json
     st.set_page_config(page_title="CONVERSOR UNIVERSAL PROFESIONAL", layout="wide")
     st.markdown("""
     <style>
@@ -1651,6 +1654,13 @@ def main():
         div[data-testid="stToolbar"] button[title="View source"] { display: none !important; }
         </style>
     """, unsafe_allow_html=True)
+    # Detección de entorno en la nube para ajustar UI/descargas
+    IS_CLOUD = os.path.exists("/mount")
+    try:
+        IS_CLOUD = IS_CLOUD or bool(st.secrets.get("IS_CLOUD", False))
+    except Exception:
+        # En local puede no existir secrets.toml; mantener valor actual
+        pass
     st.caption("Carga archivos, define el sistema de referencia y descarga resultados geoespaciales.")
 
     with st.sidebar:
@@ -1830,7 +1840,7 @@ def main():
                         st.error(f"No se pudo pegar desde el portapapeles. Asegúrate de que has copiado datos tabulares. Error: {e}")
             st.text_input("Nombre de carpeta", value=st.session_state.get("topo_folder", "Trabajo_Topográfico"), key="topo_folder")
             st.text_input("Ruta de descarga", value=st.session_state.get("topo_output_dir", str(Path.home() / "Downloads")), key="topo_output_dir")
-            if st.button("Seleccionar carpeta de descarga", key="btn_topo_select_dir"):
+            if (not IS_CLOUD) and st.button("Seleccionar carpeta de descarga", key="btn_topo_select_dir"):
                 import tkinter as tk
                 from tkinter import filedialog
                 root = tk.Tk(); root.withdraw()
@@ -1856,7 +1866,9 @@ def main():
             if df is not None:
                 col_btn1, col_btn2 = st.columns([2,2])
                 gen_clicked = col_btn1.button("Generar salidas", key="btn_topo_generate")
-                open_folder_clicked = col_btn2.button("Abrir carpeta de salida", key="btn_topo_open_folder")
+                open_folder_clicked = False
+                if not IS_CLOUD:
+                    open_folder_clicked = col_btn2.button("Abrir carpeta de salida", key="btn_topo_open_folder")
                 if open_folder_clicked:
                     import os, webbrowser
                     base_dir = st.session_state["topo_output_dir"]
@@ -2489,6 +2501,45 @@ def main():
                     # Mensaje de éxito con ubicación
                     st.success(f"Salidas topográficas generadas en: {main_folder}")
 
+                    # Paquete ZIP para descarga (Cloud-safe)
+                    try:
+                        zip_buf = io.BytesIO()
+                        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
+                            # Archivos principales
+                            for p, arc in [
+                                (dxf_path, f"{folder_name}.dxf"),
+                                (kml_path, f"{folder_name}.kml"),
+                                (geojson_path, f"mapbox/{folder_name}.geojson"),
+                                (json_path, f"mapbox/{folder_name}.json"),
+                            ]:
+                                try:
+                                    if os.path.exists(p):
+                                        zf_.write(p, arcname=arc)
+                                except Exception:
+                                    pass
+                            # Shapefiles
+                            try:
+                                for fname in os.listdir(shp_dir):
+                                    fp = os.path.join(shp_dir, fname)
+                                    if os.path.isfile(fp):
+                                        zf_.write(fp, arcname=os.path.join("shapefiles", fname))
+                            except Exception:
+                                pass
+                            # Visor HTML
+                            try:
+                                zf_.writestr("index.html", index_html_content or "")
+                            except Exception:
+                                pass
+                        zip_buf.seek(0)
+                        st.download_button(
+                            "Descargar paquete ZIP Topografía",
+                            data=zip_buf.getvalue(),
+                            file_name=f"{folder_name}_salidas.zip",
+                            mime="application/zip",
+                        )
+                    except Exception as e:
+                        st.warning(f"No se pudo generar el ZIP de Topografía: {e}")
+
             
     with tab_dxf:
         col1, col2, col3, col4 = st.columns([2,7,6,5])
@@ -2519,7 +2570,7 @@ def main():
             )
             col1, col2, col3, col4 = st.columns([2,7,6,5])
             with col1:
-                if st.button("Seleccionar carpeta"):
+                if (not IS_CLOUD) and st.button("Seleccionar carpeta"):
                     try:
                         import tkinter as tk
                         from tkinter import filedialog
@@ -2572,8 +2623,10 @@ def main():
                     tmpdir_path = Path(tmpdir)
                     base_name_local = Path(uploaded.name).stem or "archivo"
                     dxf_path = (tmpdir_path / base_name_local).with_suffix(".dxf")
+                    data_bytes = uploaded.read()
+                    st.session_state["input_dxf_bytes"] = data_bytes
                     with open(dxf_path, "wb") as f:
-                        f.write(uploaded.read())
+                        f.write(data_bytes)
 
                     try:
                         # Para shapefiles, seguir el criterio de agrupación seleccionado (común)
@@ -2617,8 +2670,8 @@ def main():
                     )
             except Exception:
                 pass
-            # Botón único: Descargar Resultados al sistema de archivos
-            if st.button("Descargar Resultados", key="btn_save_all"):
+            # Botón único: Descargar Resultados al sistema de archivos (solo local)
+            if (not IS_CLOUD) and st.button("Descargar Resultados", key="btn_save_all"):
                 import json
                 import shutil
                 base_dir = Path(st.session_state.get("output_dir") or Path.cwd())
@@ -2750,6 +2803,32 @@ def main():
                 except Exception as exc:
                     st.error(f"No se pudieron guardar los resultados: {exc}")
 
+            # Entrega Cloud-safe: solo ZIP en memoria
+            base_name_save = st.session_state.get("base_name", "Proyecto1")
+            html_str = st.session_state.get("project_map_html")
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
+                if outputs_local.get("kmz_bytes"): zf_.writestr(f"{base_name_save}.kmz", outputs_local["kmz_bytes"])
+                if outputs_local.get("geojson_bytes"): zf_.writestr(f"{base_name_save}.geojson", outputs_local["geojson_bytes"])
+                if outputs_local.get("json_bytes"): zf_.writestr(f"{base_name_save}.json", outputs_local["json_bytes"])
+                if html_str: zf_.writestr(f"{base_name_save}_map.html", html_str.encode("utf-8"))
+                # Incluir el DXF original subido
+                try:
+                    dxf_bytes_in = st.session_state.get("input_dxf_bytes")
+                    if dxf_bytes_in:
+                        zf_.writestr(f"{base_name_save}.dxf", dxf_bytes_in)
+                except Exception:
+                    pass
+                shp_src = outputs_local.get("shp_dir")
+                if shp_src:
+                    try:
+                        for f in Path(shp_src).glob("*"):
+                            zf_.write(f, arcname=f"Shapes/{f.name}")
+                    except Exception:
+                        pass
+            zip_buf.seek(0)
+            st.download_button("Descargar paquete ZIP", data=zip_buf.getvalue(), file_name=f"{base_name_save}_salidas.zip", mime="application/zip")
+
             # Vista previa del mapa eliminada: usar pestaña "Mapa del proyecto"
 
     with tab_gpx:
@@ -2778,7 +2857,7 @@ def main():
             )
             col1, col2, col3, col4 = st.columns([2,7,6,5])
             with col1:
-                if st.button("Seleccionar carpeta", key="btn_gpx_select_dir"):
+                if (not IS_CLOUD) and st.button("Seleccionar carpeta", key="btn_gpx_select_dir"):
                     try:
                         import tkinter as tk
                         from tkinter import filedialog
@@ -2943,8 +3022,8 @@ def main():
                     )
             except Exception:
                 pass
-            # Descarga
-            if st.button("Descargar Resultados GPX"):
+            # Guardado local (solo local)
+            if (not IS_CLOUD) and st.button("Descargar Resultados GPX"):
                 import json
                 import shutil
                 import pyproj
@@ -3126,6 +3205,26 @@ def main():
                 except Exception as e:
                     st.error(f"Error guardando resultados GPX: {e}")
 
+            # Entrega Cloud-safe: solo ZIP
+            base_name = st.session_state.get("gpx_base_name", "gpx")
+            gpx_outputs = st.session_state["gpx_outputs"]
+            html_str = st.session_state.get("project_map_html")
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
+                if gpx_outputs.get("kmz_bytes"): zf_.writestr(f"{base_name}.kmz", gpx_outputs["kmz_bytes"])
+                if gpx_outputs.get("geojson_bytes"): zf_.writestr(f"{base_name}.geojson", gpx_outputs["geojson_bytes"])
+                if gpx_outputs.get("json_bytes"): zf_.writestr(f"{base_name}.json", gpx_outputs["json_bytes"])
+                if html_str: zf_.writestr(f"{base_name}_map.html", html_str.encode("utf-8"))
+                shp_src = gpx_outputs.get("shp_dir")
+                if shp_src:
+                    try:
+                        for f in Path(shp_src).glob("*"):
+                            zf_.write(f, arcname=f"Shapes/{f.name}")
+                    except Exception:
+                        pass
+            zip_buf.seek(0)
+            st.download_button("Descargar paquete ZIP GPX", data=zip_buf.getvalue(), file_name=f"{base_name}_salidas.zip", mime="application/zip")
+
     with tab_kmz:
         if "kml_output_folder" not in st.session_state:
             st.session_state["kml_output_folder"] = "Proyecto1"
@@ -3152,7 +3251,7 @@ def main():
             )
             col1, col2, col3, col4 = st.columns([2,7,6,5])
             with col1:
-                if st.button("Seleccionar carpeta", key="btn_kml_select_dir"):
+                if (not IS_CLOUD) and st.button("Seleccionar carpeta", key="btn_kml_select_dir"):
                     try:
                         import tkinter as tk
                         from tkinter import filedialog
@@ -3390,7 +3489,8 @@ def main():
                     )
             except Exception:
                 pass
-            if st.button("Descargar Resultados KML/KMZ"):
+            # Guardado local (solo local)
+            if (not IS_CLOUD) and st.button("Descargar Resultados KML/KMZ"):
                 import json
                 import shutil
                 import pyproj
@@ -3579,6 +3679,27 @@ def main():
                     st.success(f"Resultados KML/KMZ guardados en: {dest_dir}")
                 except Exception as e:
                     st.error(f"Error guardando resultados KML/KMZ: {e}")
+
+            # Entrega Cloud-safe: solo ZIP
+            base_name = st.session_state.get("kml_base_name", "kml")
+            kml_outputs = st.session_state["kml_outputs"]
+            kmz_bytes = kml_outputs.get("kmz_bytes", b"")
+            html_str = st.session_state.get("project_map_html")
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
+                if kmz_bytes: zf_.writestr(f"{base_name}.kmz", kmz_bytes)
+                if kml_outputs.get("geojson_bytes"): zf_.writestr(f"{base_name}.geojson", kml_outputs["geojson_bytes"])
+                if kml_outputs.get("json_bytes"): zf_.writestr(f"{base_name}.json", kml_outputs["json_bytes"])
+                if html_str: zf_.writestr(f"{base_name}_map.html", html_str.encode("utf-8"))
+                shp_src = kml_outputs.get("shp_dir")
+                if shp_src:
+                    try:
+                        for f in Path(shp_src).glob("*"):
+                            zf_.write(f, arcname=f"Shapes/{f.name}")
+                    except Exception:
+                        pass
+            zip_buf.seek(0)
+            st.download_button("Descargar paquete ZIP", data=zip_buf.getvalue(), file_name=f"{base_name}_salidas.zip", mime="application/zip")
 
     # Contenido de pestaña Mapa del proyecto
     with tab_map:
