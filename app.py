@@ -662,6 +662,240 @@ def convert_dxf(file_path: Path, input_epsg: int, output_epsg: int, shapes_group
     }
 
 
+def create_normal_html(geojson_data, title="Map Viewer", bounds=None, grouping_mode="type"):
+    """Genera HTML con visor Leaflet normal con control de capas según modo de agrupamiento"""
+    geojson_str = json.dumps(geojson_data)
+    bounds_str = json.dumps(bounds) if bounds else "null"
+    
+    if grouping_mode.lower() == "layer":
+        # Modo LAYER: Agrupar por layer del DXF
+        html_template = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title} - Map Viewer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style> 
+        html, body {{ height: 100%; margin: 0; }} 
+        #map {{ height: 100vh; }} 
+        .leaflet-control-layers-expanded {{ max-height: 60vh; overflow: auto; }}
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script>
+        const map = L.map('map', {{ preferCanvas: true }});
+        
+        // Capas base
+        const calles = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'OpenStreetMap', maxZoom: 19 }});
+        const positron = L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'CartoDB Positron', maxZoom: 19 }});
+        const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{ attribution: 'Esri', maxZoom: 19 }});
+        const baseMaps = {{
+            "Calles": calles,
+            "Positron": positron,
+            "Satelital": satelite
+        }};
+        calles.addTo(map);
+
+        // GeoJSON y grupos por LAYER
+        const data = {geojson_str};
+        function groupByLayer(features) {{
+            const groups = {{}};
+            features.forEach(f => {{
+                const layer = (f.properties && f.properties.layer) ? f.properties.layer : 'Default';
+                if (!groups[layer]) groups[layer] = [];
+                groups[layer].push(f);
+            }});
+            return groups;
+        }}
+        
+        const grouped = groupByLayer(data.features || []);
+        const overlayMaps = {{}};
+        
+        // Colores por layer
+        const layerColors = ['#ff0000', '#0000ff', '#00ff00', '#ffff00', '#ff00ff', '#00ffff', '#ff8000', '#8000ff', '#0080ff', '#ff0080'];
+        let colorIndex = 0;
+        
+        Object.keys(grouped).forEach(layer => {{
+            const feats = grouped[layer];
+            const color = layerColors[colorIndex % layerColors.length];
+            colorIndex++;
+            
+            let layerGroup = L.layerGroup();
+            
+            feats.forEach(feature => {{
+                const type = (feature.properties && feature.properties.type) ? feature.properties.type : 'unknown';
+                
+                if (type === 'point' || type === 'block') {{
+                    const marker = L.circleMarker([feature.geometry.coordinates[1], feature.geometry.coordinates[0]], {{
+                        radius: 4, 
+                        color: color, 
+                        fillColor: color,
+                        fillOpacity: 0.8
+                    }});
+                    layerGroup.addLayer(marker);
+                }} else if (type === 'text') {{
+                    const label = feature.properties && feature.properties.text ? feature.properties.text : '';
+                    const marker = L.marker([feature.geometry.coordinates[1], feature.geometry.coordinates[0]], {{
+                        icon: L.divIcon({{ 
+                            className: '', 
+                            html: `<div style='font-size:12px;color:${{color}};font-weight:600;background:white;padding:2px;border-radius:3px;'>${{label}}</div>` 
+                        }})
+                    }});
+                    layerGroup.addLayer(marker);
+                }} else {{
+                    // Líneas y polígonos
+                    const geoJsonLayer = L.geoJSON(feature, {{
+                        style: {{ color: color, weight: 2, opacity: 0.8 }}
+                    }});
+                    layerGroup.addLayer(geoJsonLayer);
+                }}
+            }});
+            
+            overlayMaps[layer] = layerGroup;
+            layerGroup.addTo(map);
+        }});
+
+        // Control de capas
+        L.control.layers(baseMaps, overlayMaps, {{ position: 'topright', collapsed: false }}).addTo(map);
+
+        // Ajuste de extensión
+        const bounds = {bounds_str};
+        if (bounds && bounds.length === 2) {{ 
+            map.fitBounds(bounds); 
+        }} else {{
+            try {{
+                let allBounds = [];
+                Object.values(overlayMaps).forEach(l => {{
+                    if (l.getBounds) allBounds.push(l.getBounds());
+                }});
+                if (allBounds.length) {{
+                    let merged = allBounds[0];
+                    for (let i = 1; i < allBounds.length; i++) {{
+                        merged.extend(allBounds[i]);
+                    }}
+                    map.fitBounds(merged);
+                }} else {{
+                    map.setView([0,0], 2);
+                }}
+            }} catch (e) {{ map.setView([0,0], 2); }}
+        }}
+    </script>
+</body>
+</html>"""
+    else:
+        # Modo TYPE: Agrupar por tipo (puntos, líneas, textos)
+        html_template = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title} - Map Viewer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style> 
+        html, body {{ height: 100%; margin: 0; }} 
+        #map {{ height: 100vh; }} 
+        .leaflet-control-layers-expanded {{ max-height: 60vh; overflow: auto; }}
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script>
+        const map = L.map('map', {{ preferCanvas: true }});
+        
+        // Capas base
+        const calles = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'OpenStreetMap', maxZoom: 19 }});
+        const positron = L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'CartoDB Positron', maxZoom: 19 }});
+        const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{ attribution: 'Esri', maxZoom: 19 }});
+        const baseMaps = {{
+            "Calles": calles,
+            "Positron": positron,
+            "Satelital": satelite
+        }};
+        calles.addTo(map);
+
+        // GeoJSON y grupos por TIPO
+        const data = {geojson_str};
+        function groupByType(features) {{
+            const groups = {{}};
+            features.forEach(f => {{
+                const type = (f.properties && f.properties.type) ? f.properties.type : 'Otro';
+                if (!groups[type]) groups[type] = [];
+                groups[type].push(f);
+            }});
+            return groups;
+        }}
+        
+        const grouped = groupByType(data.features || []);
+        const overlayMaps = {{}};
+        
+        Object.keys(grouped).forEach(type => {{
+            const feats = grouped[type];
+            let layer;
+            
+            if (type === 'point' || type === 'block') {{
+                layer = L.geoJSON(feats, {{
+                    pointToLayer: function (feature, latlng) {{
+                        return L.circleMarker(latlng, {{ radius: 4, color: '#00ff00', fillOpacity: 0.8 }});
+                    }}
+                }});
+            }} else if (type === 'text') {{
+                layer = L.geoJSON(feats, {{
+                    pointToLayer: function (feature, latlng) {{
+                        const label = feature.properties && feature.properties.text ? feature.properties.text : '';
+                        return L.marker(latlng, {{
+                            icon: L.divIcon({{ 
+                                className: '', 
+                                html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;background:white;padding:2px;border-radius:3px;'>${{label}}</div>` 
+                            }})
+                        }});
+                    }}
+                }});
+            }} else {{
+                // Líneas y polígonos
+                layer = L.geoJSON(feats, {{
+                    style: {{ color: '#ff0000', weight: 2, opacity: 0.8 }}
+                }});
+            }}
+            
+            overlayMaps[type.charAt(0).toUpperCase() + type.slice(1)] = layer;
+            layer.addTo(map);
+        }});
+
+        // Control de capas
+        L.control.layers(baseMaps, overlayMaps, {{ position: 'topright', collapsed: false }}).addTo(map);
+
+        // Ajuste de extensión
+        const bounds = {bounds_str};
+        if (bounds && bounds.length === 2) {{ 
+            map.fitBounds(bounds); 
+        }} else {{
+            try {{
+                let allBounds = [];
+                Object.values(overlayMaps).forEach(l => {{
+                    if (l.getBounds) allBounds.push(l.getBounds());
+                }});
+                if (allBounds.length) {{
+                    let merged = allBounds[0];
+                    for (let i = 1; i < allBounds.length; i++) {{
+                        merged.extend(allBounds[i]);
+                    }}
+                    map.fitBounds(merged);
+                }} else {{
+                    map.setView([0,0], 2);
+                }}
+            }} catch (e) {{ map.setView([0,0], 2); }}
+        }}
+    </script>
+</body>
+</html>"""
+    
+    return html_template
+
+
 def create_mapbox_html(geojson_data, title="Visor GeoJSON Profesional", folder_name="Proyecto", grouping_mode="layer"):
     """Genera HTML con visor Mapbox usando el template avanzado
     
@@ -1796,11 +2030,12 @@ def main():
         st.session_state["output_epsg"] = st.number_input("EPSG de salida", value=int(st.session_state["output_epsg"]),
                                                           min_value=2000, max_value=99999, step=1)
         st.session_state["group_by"] = st.selectbox("Agrupar capas por", options=["type", "layer"], index=(0 if st.session_state["group_by"] == "type" else 1))
-        # Ayuda contextual de agrupación
+        
+        # Información explicativa sobre agrupamiento
         if st.session_state["group_by"] == "type":
-            st.info("Modo TYPE: agrupa por tipo geométrico. Verás capas como Puntos, Líneas/Polilíneas, Textos, Círculos, Bloques.")
+            st.info("🔵 **Modo TYPE**: Agrupa elementos por tipo geométrico:\n- **Puntos**: POINT, INSERT (bloques)\n- **Líneas**: LINE, POLYLINE, LWPOLYLINE\n- **Textos**: TEXT, MTEXT")
         else:
-            st.info("Modo LAYER: reproduce las capas originales del DXF. Cada capa del DXF aparece como una capa activable en el visor.")
+            st.info("🟡 **Modo LAYER**: Agrupa elementos por capa del DXF:\n- Cada capa del archivo DXF se muestra por separado\n- Útil para visualizar la estructura original del dibujo")
         
         # Configuración de tipo de mapa HTML
         st.markdown("**Tipo de Mapa HTML**")
@@ -2668,7 +2903,7 @@ def main():
         if uploaded is not None:
             st.text("Ruta de salida")
             new_output_dir = st.text_input(
-                "",
+                "Ruta de salida",
                 value=st.session_state["output_dir"],
                 key="output_dir_input_enabled",
                 placeholder=str(Path.cwd()),
@@ -2805,97 +3040,8 @@ def main():
                     if html_map_type == "mapbox":
                         index_html = create_mapbox_html(geojson_emb, title=f"{base_name_save} - Map Viewer", folder_name=base_name_save, grouping_mode=grouping_mode)
                     else:
-                        # HTML normal con Leaflet
-                        index_html = f"""<!DOCTYPE html>
-<html lang=\"es\">
-<head>
-    <meta charset=\"UTF-8" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0" />
-    <title>{base_name_save} - Map Viewer</title>
-    <link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>
-    <style> html, body {{ height: 100%; margin: 0; }} #map {{ height: 100vh; }} </style>
-</head>
-<body>
-    <div id=\"map\"></div>
-    <script>
-        const map = L.map('map', {{ preferCanvas: true }});
-        // Capas base
-        const calles = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'OpenStreetMap', maxZoom: 19 }});
-        const positron = L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'CartoDB Positron', maxZoom: 19 }});
-        const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{ attribution: 'Esri', maxZoom: 19 }});
-        const baseMaps = {{
-            "Calles": calles,
-            "Positron": positron,
-            "Satelital": satelite
-        }};
-        calles.addTo(map);
-
-        // GeoJSON y grupos
-        const data = {geojson_str};
-        // Agrupar por tipo
-        function groupFeatures(features) {{
-            const groups = {{}};
-            features.forEach(f => {{
-                const type = (f.properties && f.properties.type) ? f.properties.type : 'Otro';
-                if (!groups[type]) groups[type] = [];
-                groups[type].push(f);
-            }});
-            return groups;
-        }}
-        const grouped = groupFeatures(data.features || []);
-        const overlayMaps = {{}};
-        Object.keys(grouped).forEach(type => {{
-            const feats = grouped[type];
-            let layer;
-            if (type === 'point' || type === 'points') {{
-                layer = L.geoJSON(feats, {{
-                    pointToLayer: function (feature, latlng) {{
-                        return L.circleMarker(latlng, {{ radius: 2, color: '#2c7fb8', fillOpacity: 0.9 }});
-                    }}
-                }});
-            }} else if (type === 'text') {{
-                layer = L.geoJSON(feats, {{
-                    pointToLayer: function (feature, latlng) {{
-                        const label = feature.properties && feature.properties.text ? feature.properties.text : '';
-                        return L.marker(latlng, {{
-                            icon: L.divIcon({{ className: '', html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${{label}}</div>` }})
-                        }});
-                    }}
-                }});
-            }} else {{
-                layer = L.geoJSON(feats);
-            }}
-            overlayMaps[type.charAt(0).toUpperCase() + type.slice(1)] = layer;
-            layer.addTo(map);
-        }});
-
-        // Control de capas
-        L.control.layers(baseMaps, overlayMaps, {{ position: 'topright', collapsed: false }}).addTo(map);
-
-        // Ajuste de extensión
-        const bounds = {json.dumps(bounds)};
-        if (bounds && bounds.length === 2) {{ map.fitBounds(bounds); }} else {{
-            try {{
-                let allBounds = [];
-                Object.values(overlayMaps).forEach(l => {{
-                    if (l.getBounds) allBounds.push(l.getBounds());
-                }});
-                if (allBounds.length) {{
-                    let merged = allBounds[0];
-                    for (let i = 1; i < allBounds.length; i++) {{
-                        merged.extend(allBounds[i]);
-                    }}
-                    map.fitBounds(merged);
-                }} else {{
-                    map.setView([0,0], 2);
-                }}
-            }} catch (e) {{ map.setView([0,0], 2); }}
-        }}
-    </script>
-</body>
-</html>
-                    """
+                        # HTML normal con Leaflet - respetando modo de agrupamiento
+                        index_html = create_normal_html(geojson_emb, base_name_save, bounds, grouping_mode)
                     
                     (dest_dir / "index.html").write_text(index_html, encoding="utf-8")
                     st.success(f"Resultados guardados en: {dest_dir}")
@@ -2948,7 +3094,7 @@ def main():
         if gpx_file is not None:
             st.text("Ruta de salida")
             gpx_output_dir = st.text_input(
-                "",
+                "Ruta de salida",
                 value=st.session_state.get("output_dir", str(Path.home() / "Downloads")),
                 key="gpx_output_dir_input",
                 placeholder=str(Path.cwd()),
@@ -3337,7 +3483,7 @@ def main():
         if kmz_file is not None:
             st.text("Ruta de salida")
             kml_output_dir = st.text_input(
-                "",
+                "Ruta de salida",
                 value=st.session_state.get("output_dir", str(Path.home() / "Downloads")),
                 key="kml_output_dir_input",
                 placeholder=str(Path.cwd()),
