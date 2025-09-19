@@ -723,30 +723,52 @@ def create_normal_html(geojson_data, title="Map Viewer", bounds=None, grouping_m
             feats.forEach(feature => {{
                 const type = (feature.properties && feature.properties.type) ? feature.properties.type : 'unknown';
                 
-                if (type === 'point' || type === 'block') {{
-                    const marker = L.circleMarker([feature.geometry.coordinates[1], feature.geometry.coordinates[0]], {{
-                        radius: 4, 
-                        color: color, 
-                        fillColor: color,
-                        fillOpacity: 0.8
-                    }});
-                    layerGroup.addLayer(marker);
-                }} else if (type === 'text') {{
-                    const label = feature.properties && feature.properties.text ? feature.properties.text : '';
-                    const marker = L.marker([feature.geometry.coordinates[1], feature.geometry.coordinates[0]], {{
-                        icon: L.divIcon({{ 
-                            className: '', 
-                            html: `<div style='font-size:12px;color:${{color}};font-weight:600;background:white;padding:2px;border-radius:3px;'>${{label}}</div>` 
-                        }})
-                    }});
-                    layerGroup.addLayer(marker);
-                }} else {{
-                    // Líneas y polígonos
-                    const geoJsonLayer = L.geoJSON(feature, {{
-                        style: {{ color: color, weight: 2, opacity: 0.8 }}
-                    }});
-                    layerGroup.addLayer(geoJsonLayer);
-                }}
+                       if (type === 'point' || type === 'block') {{
+                           const [lon, lat] = feature.geometry.coordinates;
+                           const marker = L.circleMarker([lat, lon], {{
+                               radius: 4, 
+                               color: color, 
+                               fillColor: color,
+                               fillOpacity: 0.8
+                           }});
+                           layerGroup.addLayer(marker);
+                       }} else if (type === 'text') {{
+                           const [lon, lat] = feature.geometry.coordinates;
+                           const label = feature.properties && feature.properties.text ? feature.properties.text : '';
+                           const marker = L.marker([lat, lon], {{
+                               icon: L.divIcon({{ 
+                                   className: '', 
+                                   html: `<div style='font-size:12px;color:${{color}};font-weight:600;background:white;padding:2px;border-radius:3px;'>${{label}}</div>` 
+                               }})
+                           }});
+                           layerGroup.addLayer(marker);
+                       }} else {{
+                           // Líneas y polígonos - convertir coordenadas correctamente
+                           if (feature.geometry.type === 'LineString') {{
+                               const coords = feature.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                               const line = L.polyline(coords, {{
+                                   color: color, 
+                                   weight: 2, 
+                                   opacity: 0.8
+                               }});
+                               layerGroup.addLayer(line);
+                           }} else if (feature.geometry.type === 'Polygon') {{
+                               const coords = feature.geometry.coordinates[0].map(coord => [coord[1], coord[0]]);
+                               const polygon = L.polygon(coords, {{
+                                   color: color, 
+                                   weight: 2, 
+                                   opacity: 0.8,
+                                   fillOpacity: 0.1
+                               }});
+                               layerGroup.addLayer(polygon);
+                           }} else {{
+                               // Otros tipos usando geoJSON estándar
+                               const geoJsonLayer = L.geoJSON(feature, {{
+                                   style: {{ color: color, weight: 2, opacity: 0.8 }}
+                               }});
+                               layerGroup.addLayer(geoJsonLayer);
+                           }}
+                       }}
             }});
             
             overlayMaps[layer] = layerGroup;
@@ -833,30 +855,45 @@ def create_normal_html(geojson_data, title="Map Viewer", bounds=None, grouping_m
             const feats = grouped[type];
             let layer;
             
-            if (type === 'point' || type === 'block') {{
-                layer = L.geoJSON(feats, {{
-                    pointToLayer: function (feature, latlng) {{
-                        return L.circleMarker(latlng, {{ radius: 4, color: '#00ff00', fillOpacity: 0.8 }});
-                    }}
-                }});
-            }} else if (type === 'text') {{
-                layer = L.geoJSON(feats, {{
-                    pointToLayer: function (feature, latlng) {{
-                        const label = feature.properties && feature.properties.text ? feature.properties.text : '';
-                        return L.marker(latlng, {{
-                            icon: L.divIcon({{ 
-                                className: '', 
-                                html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;background:white;padding:2px;border-radius:3px;'>${{label}}</div>` 
-                            }})
-                        }});
-                    }}
-                }});
-            }} else {{
-                // Líneas y polígonos
-                layer = L.geoJSON(feats, {{
-                    style: {{ color: '#ff0000', weight: 2, opacity: 0.8 }}
-                }});
-            }}
+                   if (type === 'point' || type === 'block') {{
+                       layer = L.layerGroup();
+                       feats.forEach(feature => {{
+                           const [lon, lat] = feature.geometry.coordinates;
+                           const marker = L.circleMarker([lat, lon], {{ radius: 4, color: '#00ff00', fillOpacity: 0.8 }});
+                           layer.addLayer(marker);
+                       }});
+                   }} else if (type === 'text') {{
+                       layer = L.layerGroup();
+                       feats.forEach(feature => {{
+                           const [lon, lat] = feature.geometry.coordinates;
+                           const label = feature.properties && feature.properties.text ? feature.properties.text : '';
+                           const marker = L.marker([lat, lon], {{
+                               icon: L.divIcon({{ 
+                                   className: '', 
+                                   html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;background:white;padding:2px;border-radius:3px;'>${{label}}</div>` 
+                               }})
+                           }});
+                           layer.addLayer(marker);
+                       }});
+                   }} else {{
+                       // Líneas y polígonos - manejar coordenadas correctamente
+                       layer = L.layerGroup();
+                       feats.forEach(feature => {{
+                           if (feature.geometry.type === 'LineString') {{
+                               const coords = feature.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                               const line = L.polyline(coords, {{ color: '#ff0000', weight: 2, opacity: 0.8 }});
+                               layer.addLayer(line);
+                           }} else if (feature.geometry.type === 'Polygon') {{
+                               const coords = feature.geometry.coordinates[0].map(coord => [coord[1], coord[0]]);
+                               const polygon = L.polygon(coords, {{ color: '#ff0000', weight: 2, opacity: 0.8, fillOpacity: 0.1 }});
+                               layer.addLayer(polygon);
+                           }} else {{
+                               // Otros tipos usando geoJSON estándar
+                               const geoJsonLayer = L.geoJSON(feature, {{ style: {{ color: '#ff0000', weight: 2, opacity: 0.8 }} }});
+                               layer.addLayer(geoJsonLayer);
+                           }}
+                       }});
+                   }}
             
             overlayMaps[type.charAt(0).toUpperCase() + type.slice(1)] = layer;
             layer.addTo(map);
@@ -2167,28 +2204,47 @@ def main():
                     st.session_state.topo_paste = ""
                     if "topo_df" in st.session_state:
                         st.session_state.topo_df = None
+                    st.success("✅ Datos limpiados correctamente")
                     st.rerun()
             with col_btn3:
                 if st.button("Pegar del portapapeles"):
                     try:
                         import pandas as pd
                         import pyperclip
+                        
                         # Verificar si pyperclip está disponible
                         if not pyperclip.is_available():
-                            st.error("⚠️ Pyperclip no está disponible en tu sistema. Instala las dependencias necesarias:")
+                            st.error("⚠️ Pyperclip no está disponible en tu sistema.")
+                            st.info("💡 **Solución**: Instala las dependencias necesarias:")
                             st.code("pip install pyperclip")
-                            st.info("💡 Alternativa: Copia los datos y pégalos manualmente en el área de texto.")
+                            st.info("🔧 **Para Windows**: También necesitas instalar:")
+                            st.code("pip install pywin32")
+                            st.info("💡 **Alternativa**: Copia los datos y pégalos manualmente en el área de texto.")
                         else:
-                            # Usar read_clipboard para leer datos tabulares
-                            df_clipboard = pd.read_clipboard(header=None, sep=r"\s*[,;\t]\s*")
-                            # Convertir el dataframe a texto para mostrarlo en el área de texto
-                            pasted_text = df_clipboard.to_csv(sep='\t', index=False, header=False)
-                            st.session_state.topo_paste = pasted_text
-                            st.success("✅ Datos pegados correctamente desde el portapapeles")
-                            st.rerun()
+                            # Intentar leer del portapapeles
+                            clipboard_text = pyperclip.paste()
+                            if clipboard_text and clipboard_text.strip():
+                                # Usar read_clipboard para leer datos tabulares
+                                try:
+                                    df_clipboard = pd.read_clipboard(header=None, sep=r"\s*[,;\t]\s*")
+                                    # Convertir el dataframe a texto para mostrarlo en el área de texto
+                                    pasted_text = df_clipboard.to_csv(sep='\t', index=False, header=False)
+                                    st.session_state.topo_paste = pasted_text
+                                    st.success("✅ Datos pegados correctamente desde el portapapeles")
+                                    st.rerun()
+                                except Exception as clipboard_error:
+                                    st.warning(f"⚠️ No se pudieron procesar los datos del portapapeles como tabla: {clipboard_error}")
+                                    st.info("💡 **Alternativa**: Copia los datos y pégalos manualmente en el área de texto.")
+                            else:
+                                st.warning("⚠️ El portapapeles está vacío o no contiene datos válidos.")
+                                st.info("💡 **Sugerencia**: Copia datos tabulares y vuelve a intentar.")
+                    except ImportError as import_error:
+                        st.error(f"❌ Error de importación: {import_error}")
+                        st.info("💡 **Solución**: Instala pyperclip:")
+                        st.code("pip install pyperclip")
                     except Exception as e:
-                        st.error(f"❌ No se pudo pegar desde el portapapeles. Error: {e}")
-                        st.info("💡 Alternativa: Copia los datos y pégalos manualmente en el área de texto.")
+                        st.error(f"❌ Error inesperado: {e}")
+                        st.info("💡 **Alternativa**: Copia los datos y pégalos manualmente en el área de texto.")
             st.text_input("Nombre de carpeta", value=st.session_state.get("topo_folder", "Trabajo_Topográfico"), key="topo_folder")
             st.text_input("Ruta de descarga", value=st.session_state.get("topo_output_dir", str(Path.home() / "Downloads")), key="topo_output_dir")
             if (not IS_CLOUD) and st.button("Seleccionar carpeta de descarga", key="btn_topo_select_dir"):
@@ -2202,6 +2258,8 @@ def main():
                     st.success(f"Carpeta seleccionada: {selected_dir}")
             if st.button("Limpiar tabla", key="btn_topo_clear"):
                 st.session_state["topo_df"] = None
+                st.success("✅ Tabla limpiada correctamente")
+                st.rerun()
         with col3:
             st.subheader("Vista previa de la tabla")
             import pandas as pd
@@ -3370,12 +3428,27 @@ def main():
             base_name = st.session_state.get("gpx_base_name", "gpx")
             gpx_outputs = st.session_state["gpx_outputs"]
             html_str = st.session_state.get("project_map_html")
+            
+            # Generar DXF para el ZIP
+            dxf_bytes = None
+            try:
+                import tempfile
+                input_epsg_val = int(st.session_state.get("input_epsg", 32717))
+                to_utm = pyproj.Transformer.from_crs(f"EPSG:4326", f"EPSG:{input_epsg_val}", always_xy=True)
+                dxf_geojson = transform_geojson(gpx_outputs["geojson"], to_utm)
+                dxf_temp_path = Path(tempfile.mkdtemp()) / f"{base_name}.dxf"
+                if export_geojson_to_dxf(dxf_geojson, dxf_temp_path):
+                    dxf_bytes = dxf_temp_path.read_bytes()
+            except Exception as e:
+                st.warning(f"No se pudo generar archivo DXF: {e}")
+            
             zip_buf = io.BytesIO()
             root = f"{base_name}"
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
                 if gpx_outputs.get("kmz_bytes"): zf_.writestr(f"{root}/{base_name}.kmz", gpx_outputs["kmz_bytes"])
                 if gpx_outputs.get("geojson_bytes"): zf_.writestr(f"{root}/{base_name}.geojson", gpx_outputs["geojson_bytes"])
                 if gpx_outputs.get("json_bytes"): zf_.writestr(f"{root}/{base_name}.json", gpx_outputs["json_bytes"])
+                if dxf_bytes: zf_.writestr(f"{root}/{base_name}.dxf", dxf_bytes)
                 if html_str: zf_.writestr(f"{root}/{base_name}_map.html", html_str.encode("utf-8"))
                 shp_src = gpx_outputs.get("shp_dir")
                 if shp_src:
@@ -3747,12 +3820,27 @@ def main():
             kml_outputs = st.session_state["kml_outputs"]
             kmz_bytes = kml_outputs.get("kmz_bytes", b"")
             html_str = st.session_state.get("project_map_html")
+            
+            # Generar DXF para el ZIP
+            dxf_bytes = None
+            try:
+                import tempfile
+                input_epsg_val = int(st.session_state.get("input_epsg", 32717))
+                to_utm = pyproj.Transformer.from_crs(f"EPSG:4326", f"EPSG:{input_epsg_val}", always_xy=True)
+                dxf_geojson = transform_geojson(kml_outputs["geojson"], to_utm)
+                dxf_temp_path = Path(tempfile.mkdtemp()) / f"{base_name}.dxf"
+                if export_geojson_to_dxf(dxf_geojson, dxf_temp_path):
+                    dxf_bytes = dxf_temp_path.read_bytes()
+            except Exception as e:
+                st.warning(f"No se pudo generar archivo DXF: {e}")
+            
             zip_buf = io.BytesIO()
             root = f"{base_name}"
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf_:
                 if kmz_bytes: zf_.writestr(f"{root}/{base_name}.kmz", kmz_bytes)
                 if kml_outputs.get("geojson_bytes"): zf_.writestr(f"{root}/{base_name}.geojson", kml_outputs["geojson_bytes"])
                 if kml_outputs.get("json_bytes"): zf_.writestr(f"{root}/{base_name}.json", kml_outputs["json_bytes"])
+                if dxf_bytes: zf_.writestr(f"{root}/{base_name}.dxf", dxf_bytes)
                 if html_str: zf_.writestr(f"{root}/{base_name}_map.html", html_str.encode("utf-8"))
                 shp_src = kml_outputs.get("shp_dir")
                 if shp_src:
