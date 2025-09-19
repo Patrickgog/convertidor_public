@@ -310,7 +310,7 @@ class AuthSystem:
         if 'user_email' in st.session_state:
             with st.sidebar:
                 st.success(f"✅ Sesión activa: {st.session_state.user_email}")
-                if st.button("🚪 Cerrar sesión"):
+                if st.button("🚪 Cerrar sesión", key="logout_button"):
                     # Limpiar sesión
                     st.session_state.authenticated = False
                     st.session_state.user_email = None

@@ -31,13 +31,6 @@ logger = logging.getLogger("kml_kmz")
 # Namespaces KML
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2", "gx": "http://www.google.com/kml/ext/2.2"}
 
-# Bloquear acceso si no autenticado
-if not check_authentication():
-    st.stop()
-
-# Mostrar info de usuario autenticado en sidebar
-show_user_info()
-
 
 def remove_z_from_coords(coords):
     try:
@@ -1969,6 +1962,13 @@ def parse_polygons_robust(df, epsilon=1e-6):
 
 
 def main():
+    # Sistema de autenticación
+    if not check_authentication():
+        st.stop()
+    
+    # Mostrar info de usuario autenticado en sidebar
+    show_user_info()
+    
     def mostrar_tabla_preview(df, modo):
         import streamlit as st
         import pandas as pd
