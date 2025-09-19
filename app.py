@@ -1966,9 +1966,6 @@ def main():
     if not check_authentication():
         st.stop()
     
-    # Mostrar info de usuario autenticado en sidebar
-    show_user_info()
-    
     def mostrar_tabla_preview(df, modo):
         import streamlit as st
         import pandas as pd
