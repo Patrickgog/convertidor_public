@@ -2172,14 +2172,23 @@ def main():
                 if st.button("Pegar del portapapeles"):
                     try:
                         import pandas as pd
-                        # Usar read_clipboard para leer datos tabulares
-                        df_clipboard = pd.read_clipboard(header=None, sep=r"\s*[,;\t]\s*")
-                        # Convertir el dataframe a texto para mostrarlo en el área de texto
-                        pasted_text = df_clipboard.to_csv(sep='\t', index=False, header=False)
-                        st.session_state.topo_paste = pasted_text
-                        st.rerun()
+                        import pyperclip
+                        # Verificar si pyperclip está disponible
+                        if not pyperclip.is_available():
+                            st.error("⚠️ Pyperclip no está disponible en tu sistema. Instala las dependencias necesarias:")
+                            st.code("pip install pyperclip")
+                            st.info("💡 Alternativa: Copia los datos y pégalos manualmente en el área de texto.")
+                        else:
+                            # Usar read_clipboard para leer datos tabulares
+                            df_clipboard = pd.read_clipboard(header=None, sep=r"\s*[,;\t]\s*")
+                            # Convertir el dataframe a texto para mostrarlo en el área de texto
+                            pasted_text = df_clipboard.to_csv(sep='\t', index=False, header=False)
+                            st.session_state.topo_paste = pasted_text
+                            st.success("✅ Datos pegados correctamente desde el portapapeles")
+                            st.rerun()
                     except Exception as e:
-                        st.error(f"No se pudo pegar desde el portapapeles. Asegúrate de que has copiado datos tabulares. Error: {e}")
+                        st.error(f"❌ No se pudo pegar desde el portapapeles. Error: {e}")
+                        st.info("💡 Alternativa: Copia los datos y pégalos manualmente en el área de texto.")
             st.text_input("Nombre de carpeta", value=st.session_state.get("topo_folder", "Trabajo_Topográfico"), key="topo_folder")
             st.text_input("Ruta de descarga", value=st.session_state.get("topo_output_dir", str(Path.home() / "Downloads")), key="topo_output_dir")
             if (not IS_CLOUD) and st.button("Seleccionar carpeta de descarga", key="btn_topo_select_dir"):
@@ -3340,100 +3349,12 @@ def main():
                     
                     # Generar HTML según el tipo de mapa seleccionado
                     html_map_type = st.session_state.get("html_map_type", "normal")
+                    grouping_mode = st.session_state.get("group_by", "type")
                     if html_map_type == "mapbox":
-                        index_html = create_mapbox_html(st.session_state["gpx_outputs"]["geojson"], title="GPX - Map Viewer", folder_name=base_name, grouping_mode="layer")
+                        index_html = create_mapbox_html(st.session_state["gpx_outputs"]["geojson"], title="GPX - Map Viewer", folder_name=base_name, grouping_mode=grouping_mode)
                     else:
-                        # HTML normal con Leaflet
-                        index_html_template = """<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GPX - Map Viewer</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } </style>
-</head>
-<body>
-    <div id="map"></div>
-    <script>
-        const map = L.map('map', {{ preferCanvas: true }});
-        // Capas base
-        const calles = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'OpenStreetMap', maxZoom: 19 }});
-        const positron = L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}.png', {{ attribution: 'CartoDB Positron', maxZoom: 19 }});
-        const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{ attribution: 'Esri', maxZoom: 19 }});
-        const baseMaps = {{
-            "Calles": calles,
-            "Positron": positron,
-            "Satelital": satelite
-        }};
-        calles.addTo(map);
-
-        // GeoJSON y grupos
-        const data = __GEOJSON__;
-        // Agrupar por tipo
-        function groupFeatures(features) {{
-            const groups = {{}};
-            features.forEach(f => {{
-                const type = (f.properties && f.properties.type) ? f.properties.type : 'Otro';
-                if (!groups[type]) groups[type] = [];
-                groups[type].push(f);
-            }});
-            return groups;
-        }}
-        const grouped = groupFeatures(data.features || []);
-        const overlayMaps = {{}};
-        Object.keys(grouped).forEach(type => {{
-            const feats = grouped[type];
-            let layer;
-            if (type === 'point' || type === 'points') {{
-                layer = L.geoJSON(feats, {{
-                    pointToLayer: function (feature, latlng) {{
-                        return L.circleMarker(latlng, {{ radius: 2, color: '#2c7fb8', fillOpacity: 0.9 }});
-                    }}
-                }});
-            }} else if (type === 'text') {{
-                layer = L.geoJSON(feats, {{
-                    pointToLayer: function (feature, latlng) {{
-                        const label = feature.properties && feature.properties.text ? feature.properties.text : '';
-                        return L.marker(latlng, {{
-                            icon: L.divIcon({{ className: '', html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${{label}}</div>` }})
-                        }});
-                    }}
-                }});
-            }} else {{
-                layer = L.geoJSON(feats);
-            }}
-            overlayMaps[type.charAt(0).toUpperCase() + type.slice(1)] = layer;
-            layer.addTo(map);
-        }});
-
-        // Control de capas
-        L.control.layers(baseMaps, overlayMaps, {{ position: 'topright', collapsed: false }}).addTo(map);
-
-        // Ajuste de extensión
-        const bounds = {json.dumps(bounds)};
-        if (bounds && bounds.length === 2) {{ map.fitBounds(bounds); }} else {{
-            try {{
-                let allBounds = [];
-                Object.values(overlayMaps).forEach(l => {{
-                    if (l.getBounds) allBounds.push(l.getBounds());
-                }});
-                if (allBounds.length) {{
-                    let merged = allBounds[0];
-                    for (let i = 1; i < allBounds.length; i++) {{
-                        merged.extend(allBounds[i]);
-                    }}
-                    map.fitBounds(merged);
-                }} else {{
-                    map.setView([0,0], 2);
-                }}
-            }} catch (e) {{ map.setView([0,0], 2); }}
-        }}
-    </script>
-</body>
-</html>
-                    """
+                        # HTML normal con Leaflet - usar función unificada
+                        index_html = create_normal_html(geojson_emb, "GPX - Map Viewer", bounds, grouping_mode)
                     
                     (dest_dir / "index.html").write_text(index_html, encoding="utf-8")
                     # Exportar DXF también
@@ -3803,106 +3724,12 @@ def main():
                     
                     # Generar HTML según el tipo de mapa seleccionado
                     html_map_type = st.session_state.get("html_map_type", "normal")
+                    grouping_mode = st.session_state.get("group_by", "type")
                     if html_map_type == "mapbox":
-                        index_html = create_mapbox_html(geojson_emb, title="KML/KMZ - Map Viewer", folder_name=base_name, grouping_mode="layer")
+                        index_html = create_mapbox_html(geojson_emb, title="KML/KMZ - Map Viewer", folder_name=base_name, grouping_mode=grouping_mode)
                     else:
-                        # HTML normal con Leaflet
-                        index_html_template = """
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KML/KMZ - Map Viewer</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } </style>
-</head>
-<body>
-  <div id="map"></div>
-  <script>
-    const map = L.map('map', { preferCanvas: true });
-    // Capas base
-    const calles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: 'OpenStreetMap', maxZoom: 19 });
-    const positron = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', { attribution: 'CartoDB Positron', maxZoom: 19 });
-    const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Esri', maxZoom: 19 });
-    const baseMaps = {
-      "Calles": calles,
-      "Positron": positron,
-      "Satelital": satelite
-    };
-    calles.addTo(map);
-
-    // GeoJSON y grupos
-    const data = __GEOJSON__;
-    // Agrupar por tipo
-    function groupFeatures(features) {
-      const groups = {};
-      features.forEach(f => {
-        const type = (f.properties && f.properties.type) ? f.properties.type : 'Otro';
-        if (!groups[type]) groups[type] = [];
-        groups[type].push(f);
-      });
-      return groups;
-    }
-    const grouped = groupFeatures(data.features || []);
-    const overlayMaps = {};
-    Object.keys(grouped).forEach(type => {
-      const feats = grouped[type];
-      let layer;
-      if (type === 'point' || type === 'points') {
-        layer = L.geoJSON(feats, {
-          pointToLayer: function (feature, latlng) {
-            return L.circleMarker(latlng, { radius: 2, color: '#2c7fb8', fillOpacity: 0.9 });
-          }
-        });
-      } else if (type === 'text') {
-        layer = L.geoJSON(feats, {
-          pointToLayer: function (feature, latlng) {
-            const label = feature.properties && feature.properties.text ? feature.properties.text : '';
-            return L.marker(latlng, {
-              icon: L.divIcon({ className: '', html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${label}</div>` })
-            });
-          }
-        });
-      } else {
-        layer = L.geoJSON(feats);
-      }
-      overlayMaps[type.charAt(0).toUpperCase() + type.slice(1)] = layer;
-      layer.addTo(map);
-    });
-
-    // Control de capas
-    L.control.layers(baseMaps, overlayMaps, { position: 'topright', collapsed: false }).addTo(map);
-
-    // Ajuste de extensión
-    const bounds = __BOUNDS__;
-    if (bounds && bounds.length === 2) { map.fitBounds(bounds); } else {
-      try {
-        let allBounds = [];
-        Object.values(overlayMaps).forEach(l => {
-          if (l.getBounds) allBounds.push(l.getBounds());
-        });
-        if (allBounds.length) {
-          let merged = allBounds[0];
-          for (let i = 1; i < allBounds.length; i++) {
-            merged.extend(allBounds[i]);
-          }
-          map.fitBounds(merged);
-        } else {
-          map.setView([0,0], 2);
-        }
-      } catch (e) { map.setView([0,0], 2); }
-    }
-  </script>
-</body>
-</html>
-                    """
-                        index_html = (
-                            index_html_template
-                            .replace("__GEOJSON__", geojson_str)
-                            .replace("__BOUNDS__", json.dumps(bounds))
-                        )
+                        # HTML normal con Leaflet - usar función unificada
+                        index_html = create_normal_html(geojson_emb, "KML/KMZ - Map Viewer", bounds, grouping_mode)
                     
                     (dest_dir / "index.html").write_text(index_html, encoding="utf-8")
                     # Exportar DXF también

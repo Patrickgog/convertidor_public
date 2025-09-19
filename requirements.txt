@@ -9,6 +9,8 @@ pyproj
 numpy
 gpxpy
 fastkml
+pandas
+pyperclip
 
 # Cookies persistentes para "Recordar este dispositivo"
 streamlit-cookies-manager
