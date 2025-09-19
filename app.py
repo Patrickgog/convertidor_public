@@ -697,7 +697,9 @@ def create_normal_html(geojson_data, title="Map Viewer", bounds=None, grouping_m
             "Positron": positron,
             "Satelital": satelite
         }};
-        calles.addTo(map);
+        
+        // Agregar capa base por defecto
+        positron.addTo(map);
 
         // GeoJSON y grupos por LAYER
         const data = {geojson_str};
@@ -815,7 +817,9 @@ def create_normal_html(geojson_data, title="Map Viewer", bounds=None, grouping_m
             "Positron": positron,
             "Satelital": satelite
         }};
-        calles.addTo(map);
+        
+        // Agregar capa base por defecto
+        positron.addTo(map);
 
         // GeoJSON y grupos por TIPO
         const data = {geojson_str};

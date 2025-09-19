@@ -1,32 +1,52 @@
-import streamlit as st
-import streamlit.components.v1 as components
-import smtplib
+import os
 import json
 import time
 import hashlib
 import hmac
-import os
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
-import toml
+from pathlib import Path
 
+import streamlit as st
+import streamlit.components.v1 as components
+
+# Intentar importar cookies manager
 try:
     from streamlit_cookies_manager import EncryptedCookieManager
     COOKIES_AVAILABLE = True
 except ImportError:
     COOKIES_AVAILABLE = False
+    EncryptedCookieManager = None
 
 class AuthSystem:
     def __init__(self):
         # Detectar si estamos en Cloud
         self.is_cloud = os.path.exists("/mount") or bool(st.secrets.get("IS_CLOUD", False))
         
-        # Configuración de email
-        self.admin_email = st.secrets.get("ADMIN_EMAIL", "patricio.sar@gmail.com")
-        self.admin_password = st.secrets.get("ADMIN_PASSWORD", "vuewvixjlcrsftho")
-        self.authorized_emails = st.secrets.get("AUTHORIZED_EMAILS", "patricio.sar@gmail.com,patrickgog@outlook.com").split(",")
-        self.cookie_password = st.secrets.get("COOKIE_PASSWORD", "una_clave_larga_y_unica")
+        # Configuración de email con fallback para desarrollo local
+        try:
+            # Intentar cargar desde secrets de Streamlit Cloud
+            self.admin_email = st.secrets.get("ADMIN_EMAIL", "")
+            self.admin_password = st.secrets.get("ADMIN_PASSWORD", "")
+            self.authorized_emails = st.secrets.get("AUTHORIZED_EMAILS", "").split(",")
+            self.cookie_password = st.secrets.get("COOKIE_PASSWORD", "default_password")
+        except:
+            # Fallback para desarrollo local
+            try:
+                import toml
+                with open("secrets_local.toml", "r") as f:
+                    local_secrets = toml.load(f)
+                self.admin_email = local_secrets.get("ADMIN_EMAIL", "test@example.com")
+                self.admin_password = local_secrets.get("ADMIN_PASSWORD", "test_password")
+                self.authorized_emails = local_secrets.get("AUTHORIZED_EMAILS", "test@gmail.com").split(",")
+                self.cookie_password = local_secrets.get("COOKIE_PASSWORD", "default_password")
+            except:
+                # Configuración de emergencia para testing
+                self.admin_email = "test@example.com"
+                self.admin_password = "test_password"
+                self.authorized_emails = ["test@gmail.com", "patricio@example.com"]
+                self.cookie_password = "default_password"
         
         # Configuración SMTP
         self.smtp_server = "smtp.gmail.com"
@@ -81,18 +101,14 @@ class AuthSystem:
     def save_data(self):
         """Guarda datos en archivos JSON"""
         with open(self.auth_codes_file, 'w') as f:
-            json.dump(self.auth_codes, f, indent=2)
+            json.dump(self.auth_codes, f)
         with open(self.authorized_users_file, 'w') as f:
-            json.dump(self.authorized_users, f, indent=2)
+            json.dump(self.authorized_users, f)
         with open(self.remembered_devices_file, 'w') as f:
-            json.dump(self.remembered_devices, f, indent=2)
-
-    def is_user_authorized(self, email):
-        """Verifica si el usuario está autorizado"""
-        return email in self.authorized_emails or email in self.authorized_users
+            json.dump(self.remembered_devices, f)
 
     def generate_code(self):
-        """Genera código de acceso"""
+        """Genera código de 6 dígitos"""
         import random
         return str(random.randint(100000, 999999))
 
@@ -138,7 +154,6 @@ class AuthSystem:
             </body>
             </html>
             """
-            
             msg.attach(MIMEText(body, 'html'))
             
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
@@ -147,33 +162,28 @@ class AuthSystem:
             text = msg.as_string()
             server.sendmail(self.admin_email, email, text)
             server.quit()
-            
             return True
         except Exception as e:
             st.error(f"Error al enviar email: {e}")
             return False
 
     def create_device_token(self, email):
-        """Crea token HMAC para dispositivo"""
-        timestamp = str(int(time.time()))
+        """Crea token para recordar dispositivo"""
+        timestamp = int(time.time())
         data = f"{email}:{timestamp}"
         token = hmac.new(
             self.cookie_password.encode(),
             data.encode(),
             hashlib.sha256
         ).hexdigest()
-        return f"{email}:{timestamp}:{token}"
+        return f"{data}:{token}"
 
     def validate_device_token(self, token):
-        """Valida token HMAC"""
-        if not token or token == "dev_override":
-            return None
-        
+        """Valida token de dispositivo"""
         try:
-            parts = token.split(":")
+            parts = token.split(':')
             if len(parts) != 3:
                 return None
-            
             email, timestamp, signature = parts
             data = f"{email}:{timestamp}"
             expected_signature = hmac.new(
@@ -181,39 +191,31 @@ class AuthSystem:
                 data.encode(),
                 hashlib.sha256
             ).hexdigest()
-            
-            if hmac.compare_digest(signature, expected_signature):
-                # Verificar que no sea muy antiguo (30 días)
-                token_time = int(timestamp)
-                current_time = int(time.time())
-                if current_time - token_time < 30 * 24 * 3600:
+            if signature == expected_signature:
+                # Verificar que no haya expirado (30 días)
+                if int(time.time()) - int(timestamp) < 30 * 24 * 3600:
                     return email
+            return None
         except Exception:
-            pass
-        return None
+            return None
 
-    def set_persistent_token(self, token):
-        """Guarda token persistente con múltiples métodos"""
-        success = False
+    def set_persistent_token(self, email):
+        """Establece token persistente"""
+        token = self.create_device_token(email)
         
-        # 1) Query parameter (más confiable para Cloud)
-        try:
+        # Guardar en query parameter (para Cloud)
+        if self.is_cloud:
             st.query_params.token = token
-            success = True
-        except Exception:
-            pass
         
-        # 2) Cookie (método secundario)
+        # Guardar en cookie
         if self.cookies:
             try:
-                self.cookies["auth_token"] = token
-                self.cookies.set("auth_token", token, max_age_days=30)
+                self.cookies['auth_token'] = token
                 self.cookies.save()
-                success = True
             except Exception:
                 pass
         
-        # 3) localStorage (solo local)
+        # Guardar en localStorage (solo local)
         if not self.is_cloud:
             try:
                 components.html(f"""
@@ -221,286 +223,174 @@ class AuthSystem:
                 localStorage.setItem('auth_token', '{token}');
                 </script>
                 """, height=0)
-                success = True
             except Exception:
                 pass
-        
-        return success
 
-    def get_persistent_token(self):
-        """Obtiene token persistente de múltiples fuentes"""
-        # 1) Query parameter (más confiable)
-        try:
-            token = st.query_params.get("token")
-            if token:
-                return token
-        except Exception:
-            pass
+    def clear_persistent_token(self):
+        """Limpia token persistente"""
+        # Limpiar query parameter
+        if 'token' in st.query_params:
+            del st.query_params.token
         
-        # 2) Cookie
+        # Limpiar cookie
         if self.cookies:
             try:
-                token = self.cookies.get("auth_token")
-                if token:
-                    return token
+                self.cookies.delete('auth_token')
+                self.cookies.save()
             except Exception:
                 pass
         
-        # 3) localStorage (solo local)
+        # Limpiar localStorage (solo local)
         if not self.is_cloud:
             try:
                 components.html("""
                 <script>
-                const token = localStorage.getItem('auth_token') || '';
-                if (token) {
-                    const url = new URL(window.location.href);
-                    if (!url.searchParams.get('token')) {
-                        url.searchParams.set('token', token);
-                        window.location.replace(url.toString());
-                    }
-                }
+                localStorage.removeItem('auth_token');
                 </script>
                 """, height=0)
             except Exception:
                 pass
-        
-        return None
 
-    def check_session_timeout(self, email):
-        """Verifica timeout de sesión"""
-        if email in self.authorized_users:
-            last_access = self.authorized_users[email].get('last_access', 0)
-            timeout = st.secrets.get("SESSION_TIMEOUT", 86400)  # 24 horas por defecto
-            return time.time() - last_access > timeout
-        return True
-
-    def update_last_access(self, email):
-        """Actualiza último acceso"""
-        if email not in self.authorized_users:
-            self.authorized_users[email] = {}
-        self.authorized_users[email]['last_access'] = time.time()
-        self.save_data()
-
-def show_login_page():
-    """Muestra página de login"""
-    st.title("🚀 Conversor Universal Profesional")
-    st.markdown("Esta aplicación requiere autenticación para su uso.")
-    
-    auth = AuthSystem()
-    
-    # Formulario de login
-    with st.form("login_form"):
-        email = st.text_input("📧 Email", placeholder="tu@email.com")
-        col1, col2 = st.columns(2)
+    def show_login_page(self):
+        """Muestra página de login"""
+        st.title("🚀 Conversor Universal Profesional")
+        st.markdown("Esta aplicación requiere autenticación para su uso.")
         
-        with col1:
-            request_code = st.form_submit_button("📨 Solicitar Código", use_container_width=True)
+        email = st.text_input("Email")
         
-        with col2:
-            verify_code = st.form_submit_button("✅ Verificar Código", use_container_width=True)
-        
-        if request_code:
-            if email and "@" in email:
-                if auth.is_user_authorized(email):
-                    code = auth.generate_code()
-                    auth.auth_codes[email] = {
-                        'code': code,
-                        'timestamp': time.time(),
-                        'attempts': 0
-                    }
-                    auth.save_data()
-                    
-                    if auth.send_code_email(email, code):
-                        st.success(f"✅ Código enviado a {email}")
-                    else:
-                        st.error("❌ Error al enviar código")
+        if st.button("Solicitar código"):
+            if email in self.authorized_emails:
+                code = self.generate_code()
+                self.auth_codes[email] = {
+                    'code': code,
+                    'timestamp': time.time(),
+                    'used': False
+                }
+                self.save_data()
+                
+                if self.send_code_email(email, code):
+                    st.success("Código enviado por email")
                 else:
-                    st.error("❌ Email no autorizado")
+                    st.error("Error al enviar código")
             else:
-                st.error("❌ Email inválido")
+                st.error("Email no autorizado")
         
-        if verify_code:
-            code = st.text_input("🔢 Código de Acceso", placeholder="123456")
-            remember_device = st.checkbox("💾 Recordar este dispositivo", value=True)
-            
-            if code and email:
-                if email in auth.auth_codes:
-                    stored_code = auth.auth_codes[email]
-                    if (time.time() - stored_code['timestamp'] < 600 and  # 10 minutos
-                        stored_code['code'] == code and
-                        stored_code['attempts'] < 3):
-                        
-                        # Autenticación exitosa
-                        st.session_state.authenticated = True
-                        st.session_state.user_email = email
-                        st.session_state.auth_timestamp = time.time()
-                        st.session_state.remember_device = remember_device
-                        
-                        # Guardar token persistente si se seleccionó recordar
-                        if remember_device:
-                            token = auth.create_device_token(email)
-                            if auth.set_persistent_token(token):
-                                st.session_state.device_token = token
-                                st.success("✅ Dispositivo recordado")
-                            else:
-                                st.warning("⚠️ No se pudo recordar el dispositivo")
-                        
-                        # Limpiar código usado
-                        del auth.auth_codes[email]
-                        auth.save_data()
-                        
-                        # Actualizar último acceso
-                        auth.update_last_access(email)
-                        
-                        st.success("✅ Autenticación exitosa")
-                        st.rerun()
-                    else:
-                        st.error("❌ Código inválido o expirado")
-                        auth.auth_codes[email]['attempts'] += 1
-                        auth.save_data()
+        code = st.text_input("Código de acceso")
+        remember_device = st.checkbox("Recordar este dispositivo")
+        
+        if st.button("Verificar código"):
+            if email in self.auth_codes:
+                auth_data = self.auth_codes[email]
+                if (auth_data['code'] == code and 
+                    not auth_data['used'] and 
+                    time.time() - auth_data['timestamp'] < 600):  # 10 minutos
+                    
+                    # Marcar código como usado
+                    auth_data['used'] = True
+                    self.save_data()
+                    
+                    # Establecer sesión
+                    st.session_state.authenticated = True
+                    st.session_state.user_email = email
+                    st.session_state.auth_timestamp = time.time()
+                    
+                    if remember_device:
+                        st.session_state.remember_device = True
+                        self.set_persistent_token(email)
+                    
+                    st.success("Acceso autorizado")
+                    st.rerun()
                 else:
-                    st.error("❌ No hay código pendiente para este email")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; padding: 20px; color: #666;">
-        <p><strong>Desarrollador:</strong> Patricio Sarmiento Reinoso</p>
-        <p><strong>WhatsApp:</strong> +593995959047</p>
-        <p><strong>Soporte:</strong> L-V 8AM-6PM, S 9AM-2PM (GMT-5)</p>
-    </div>
-    """, unsafe_allow_html=True)
+                    st.error("Código inválido o expirado")
+            else:
+                st.error("Código no encontrado")
+
+    def show_user_info(self):
+        """Muestra información del usuario autenticado"""
+        if 'user_email' in st.session_state:
+            with st.sidebar:
+                st.success(f"✅ Sesión activa: {st.session_state.user_email}")
+                if st.button("🚪 Cerrar sesión"):
+                    # Limpiar sesión
+                    st.session_state.authenticated = False
+                    st.session_state.user_email = None
+                    st.session_state.auth_timestamp = None
+                    st.session_state.remember_device = False
+                    st.session_state.session_closed = True
+                    
+                    # Limpiar token persistente
+                    self.clear_persistent_token()
+                    
+                    st.rerun()
 
 def check_authentication():
-    """Verifica autenticación del usuario"""
+    """Verifica autenticación"""
     auth = AuthSystem()
-
-    # Verificar si está autenticado
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-
-    # Auto-login por token recordado
-    if not st.session_state.authenticated:
-        # 1) DEV OVERRIDE: autologin por secrets en local
-        if not auth.is_cloud:
-            try:
-                dev_email = None
-                try:
-                    dev_email = st.secrets.get("DEV_AUTOLOGIN_EMAIL", None)
-                except Exception:
-                    dev_email = None
-                if not dev_email:
-                    try:
-                        with open("secrets_local.toml", "r") as f:
-                            dev_email = toml.load(f).get("DEV_AUTOLOGIN_EMAIL", None)
-                    except Exception:
-                        pass
-                if dev_email and auth.is_user_authorized(dev_email):
-                    st.session_state.authenticated = True
-                    st.session_state.user_email = dev_email
-                    st.session_state.auth_timestamp = time.time()
-                    st.session_state.remember_device = True
-                    st.session_state.device_token = "dev_override"
-                    return True
-            except Exception:
-                pass
-        
-        # 2) Token persistente - múltiples métodos
-        token = None
-        
-        # 2a) Query parameter (más confiable)
+    
+    # Verificar si ya está autenticado
+    if st.session_state.get('authenticated', False):
+        # Verificar timeout (24 horas)
+        if time.time() - st.session_state.get('auth_timestamp', 0) < 86400:
+            auth.show_user_info()
+            return True
+        else:
+            # Sesión expirada
+            st.session_state.authenticated = False
+            st.session_state.user_email = None
+            st.session_state.auth_timestamp = None
+    
+    # Verificar token persistente
+    token = None
+    
+    # 1. Query parameter (prioridad para Cloud)
+    if 'token' in st.query_params:
+        token = st.query_params.token
+    
+    # 2. Cookie
+    elif auth.cookies and 'auth_token' in auth.cookies:
+        token = auth.cookies.get('auth_token')
+    
+    # 3. localStorage (solo local)
+    elif not auth.is_cloud:
         try:
-            token = st.query_params.get("token")
+            token = components.html("""
+            <script>
+            const token = localStorage.getItem('auth_token');
+            if (token) {
+                window.parent.postMessage({type: 'auth_token', token: token}, '*');
+            }
+            </script>
+            """, height=0)
         except Exception:
             pass
-        
-        # 2b) Cookie
-        if not token and auth.cookies:
-            try:
-                token = auth.cookies.get("auth_token")
-            except Exception:
-                pass
-        
-        # 2c) localStorage (solo local)
-        if not token and not auth.is_cloud:
-            try:
-                components.html("""
-                <script>
-                const token = localStorage.getItem('auth_token') || '';
-                if (token && !window.location.search.includes('token=')) {
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('token', token);
-                    window.location.replace(url.toString());
-                }
-                </script>
-                """, height=0)
-            except Exception:
-                pass
-        
-        # Validar token encontrado
-        if token:
-            email_from_token = auth.validate_device_token(token)
-            if email_from_token and auth.is_user_authorized(email_from_token):
+    
+    if token:
+        email = auth.validate_device_token(token)
+        if email:
+            st.session_state.authenticated = True
+            st.session_state.user_email = email
+            st.session_state.auth_timestamp = time.time()
+            auth.show_user_info()
+            return True
+    
+    # Auto-login para desarrollo local
+    if not auth.is_cloud and not st.session_state.get('session_closed', False):
+        try:
+            dev_email = st.secrets.get("DEV_AUTOLOGIN_EMAIL", "")
+            if dev_email and dev_email in auth.authorized_emails:
                 st.session_state.authenticated = True
-                st.session_state.user_email = email_from_token
+                st.session_state.user_email = dev_email
                 st.session_state.auth_timestamp = time.time()
-                st.session_state.remember_device = True
-                st.session_state.device_token = token
+                auth.show_user_info()
                 return True
-
-    if not st.session_state.authenticated:
-        show_login_page()
-        return False
-
-    # Verificar timeout de sesión
-    if 'user_email' in st.session_state:
-        if auth.check_session_timeout(st.session_state.user_email):
-            st.session_state.authenticated = False
-            st.warning("⏰ Sesión expirada. Vuelve a autenticarte.")
-            st.rerun()
-            return False
-
-    return True
+        except Exception:
+            pass
+    
+    # Mostrar página de login
+    auth.show_login_page()
+    return False
 
 def show_user_info():
-    """Muestra información del usuario autenticado"""
-    if 'user_email' in st.session_state:
-        with st.sidebar:
-            st.success(f"✅ Sesión activa: {st.session_state.user_email}")
-            if st.button("🚪 Cerrar Sesión"):
-                # Limpiar sesión
-                st.session_state.authenticated = False
-                st.session_state.user_email = None
-                st.session_state.auth_timestamp = None
-                st.session_state.remember_device = False
-                st.session_state.device_token = None
-                
-                # Limpiar token persistente
-                auth = AuthSystem()
-                try:
-                    # Limpiar query parameter
-                    if "token" in st.query_params:
-                        del st.query_params.token
-                except Exception:
-                    pass
-                
-                # Limpiar cookie
-                if auth.cookies:
-                    try:
-                        auth.cookies.delete("auth_token")
-                        auth.cookies.save()
-                    except Exception:
-                        pass
-                
-                # Limpiar localStorage (solo local)
-                if not auth.is_cloud:
-                    try:
-                        components.html("""
-                        <script>
-                        localStorage.removeItem('auth_token');
-                        </script>
-                        """, height=0)
-                    except Exception:
-                        pass
-                
-                st.rerun()
+    """Muestra información del usuario"""
+    auth = AuthSystem()
+    auth.show_user_info()
