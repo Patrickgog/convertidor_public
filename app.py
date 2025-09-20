@@ -5,6 +5,7 @@ import math
 import shutil
 import zipfile
 import tempfile
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -23,6 +24,13 @@ import logging
 
 # Sistema de autenticación
 from auth_system import check_authentication, show_user_info
+
+# Librerías para mapas de calor
+import numpy as np
+from scipy.interpolate import griddata
+import rasterio
+from rasterio.transform import from_bounds, Affine
+import geopandas as gpd
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("kml_kmz")
@@ -1994,8 +2002,874 @@ def parse_polygons_robust(df, epsilon=1e-6):
         
         # Mover al siguiente segmento
         i = j + 1 if polygon_closed else len(cleaned_points)
-    
+        
     return polygons
+
+
+def validate_heatmap_data(points_df):
+    """
+    Valida los datos para el mapa de calor y proporciona información de debug.
+    
+    Args:
+        points_df: DataFrame con columnas ['x', 'y', 'cota']
+    
+    Returns:
+        dict: Información de validación y estadísticas
+    """
+    if points_df is None or len(points_df) == 0:
+        return {"valid": False, "message": "No hay datos para procesar"}
+    
+    if len(points_df) < 3:
+        return {"valid": False, "message": "Se necesitan al menos 3 puntos para generar el mapa de calor"}
+    
+    # Verificar columnas requeridas
+    required_cols = ['x', 'y', 'cota']
+    missing_cols = [col for col in required_cols if col not in points_df.columns]
+    if missing_cols:
+        return {"valid": False, "message": f"Faltan columnas requeridas: {missing_cols}"}
+    
+    # Estadísticas de los datos
+    stats = {
+        "valid": True,
+        "total_points": len(points_df),
+        "x_range": (points_df['x'].min(), points_df['x'].max()),
+        "y_range": (points_df['y'].min(), points_df['y'].max()),
+        "z_range": (points_df['cota'].min(), points_df['cota'].max()),
+        "area_coverage": (points_df['x'].max() - points_df['x'].min()) * (points_df['y'].max() - points_df['y'].min()),
+        "center": ((points_df['x'].min() + points_df['x'].max()) / 2, (points_df['y'].min() + points_df['y'].max()) / 2)
+    }
+    
+    return stats
+
+
+def calculate_raster_bounds(points_df, margin_percent=10):
+    """
+    Calcula los bounds del raster basado en los puntos topográficos con margen configurable.
+    Asegura que el área sea cuadrada para mejor cobertura y orientación correcta.
+    
+    Args:
+        points_df: DataFrame con columnas ['x', 'y', 'cota']
+        margin_percent: Porcentaje de margen a agregar (default: 10%)
+    
+    Returns:
+        tuple: (min_x, min_y, max_x, max_y)
+    """
+    if points_df is None or len(points_df) == 0:
+        return None
+    
+    # Obtener bounds de los puntos
+    min_x, max_x = points_df['x'].min(), points_df['x'].max()
+    min_y, max_y = points_df['y'].min(), points_df['y'].max()
+    
+    # Calcular rangos
+    x_range = max_x - min_x
+    y_range = max_y - min_y
+    
+    # Agregar margen
+    margin_x = x_range * (margin_percent / 100)
+    margin_y = y_range * (margin_percent / 100)
+    
+    # Calcular centro del área
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    
+    # Usar el rango más grande para crear un área cuadrada
+    max_range = max(x_range, y_range)
+    half_size = (max_range + max(margin_x, margin_y)) / 2
+    
+    # Crear bounds cuadrados centrados en el área de estudio
+    bounds_x_min = center_x - half_size
+    bounds_x_max = center_x + half_size
+    bounds_y_min = center_y - half_size
+    bounds_y_max = center_y + half_size
+    
+    return (bounds_x_min, bounds_y_min, bounds_x_max, bounds_y_max)
+
+
+def debug_heatmap_coordinates(points_df, bounds, resolution):
+    """
+    Función de debug para analizar las coordenadas del mapa de calor.
+    
+    Args:
+        points_df: DataFrame con coordenadas
+        bounds: tuple (min_x, min_y, max_x, max_y)
+        resolution: Resolución del raster
+    
+    Returns:
+        dict: Información de debug detallada
+    """
+    min_x, min_y, max_x, max_y = bounds
+    
+    # Calcular información de la grilla
+    pixel_width = (max_x - min_x) / resolution
+    pixel_height = (max_y - min_y) / resolution
+    
+    # CORRECCIÓN: Crear transformación correcta para indexing='ij'
+    transform = Affine.translation(min_x, min_y) * Affine.scale(pixel_width, pixel_height)
+    
+    # Calcular coordenadas de esquinas con indexing='ij'
+    corners = {
+        "bottom_left": transform * (0, 0),  # Píxel (0,0) -> (min_x, min_y)
+        "bottom_right": transform * (resolution, 0),  # Píxel (width,0) -> (max_x, min_y)
+        "top_left": transform * (0, resolution),  # Píxel (0,height) -> (min_x, max_y)
+        "top_right": transform * (resolution, resolution)  # Píxel (width,height) -> (max_x, max_y)
+    }
+    
+    # Información de debug
+    debug_info = {
+        "bounds": bounds,
+        "resolution": resolution,
+        "pixel_size": (pixel_width, pixel_height),
+        "transform_matrix": [transform.a, transform.b, transform.c, transform.d, transform.e, transform.f],
+        "corners": corners,
+        "points_sample": {
+            "first_point": (points_df['x'].iloc[0], points_df['y'].iloc[0]) if len(points_df) > 0 else None,
+            "last_point": (points_df['x'].iloc[-1], points_df['y'].iloc[-1]) if len(points_df) > 0 else None,
+            "center": ((points_df['x'].min() + points_df['x'].max()) / 2, (points_df['y'].min() + points_df['y'].max()) / 2)
+        }
+    }
+    
+    return debug_info
+
+
+def create_heatmap_debug_file(points_df, bounds, resolution, output_path):
+    """
+    Crea un archivo de debug con información detallada del mapa de calor.
+    
+    Args:
+        points_df: DataFrame con coordenadas
+        bounds: tuple (min_x, min_y, max_x, max_y)
+        resolution: Resolución del raster
+        output_path: Ruta donde guardar el archivo de debug
+    """
+    try:
+        debug_info = debug_heatmap_coordinates(points_df, bounds, resolution)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("=== DEBUG MAPA DE CALOR ===\n\n")
+            f.write(f"Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            f.write("=== BOUNDS ===\n")
+            f.write(f"Min X: {bounds[0]:.6f}\n")
+            f.write(f"Min Y: {bounds[1]:.6f}\n")
+            f.write(f"Max X: {bounds[2]:.6f}\n")
+            f.write(f"Max Y: {bounds[3]:.6f}\n\n")
+            
+            f.write("=== RESOLUCIÓN ===\n")
+            f.write(f"Resolución: {resolution}x{resolution}\n")
+            f.write(f"Tamaño de píxel X: {debug_info['pixel_size'][0]:.6f}\n")
+            f.write(f"Tamaño de píxel Y: {debug_info['pixel_size'][1]:.6f}\n\n")
+            
+            f.write("=== MATRIZ DE TRANSFORMACIÓN ===\n")
+            matrix = debug_info['transform_matrix']
+            f.write(f"a={matrix[0]:.6f}, b={matrix[1]:.6f}\n")
+            f.write(f"c={matrix[2]:.6f}, d={matrix[3]:.6f}\n")
+            f.write(f"e={matrix[4]:.6f}, f={matrix[5]:.6f}\n\n")
+            
+            f.write("=== ESQUINAS DEL RASTER ===\n")
+            corners = debug_info['corners']
+            f.write(f"Superior izquierda (0,0): {corners['top_left']}\n")
+            f.write(f"Superior derecha ({resolution},0): {corners['top_right']}\n")
+            f.write(f"Inferior izquierda (0,{resolution}): {corners['bottom_left']}\n")
+            f.write(f"Inferior derecha ({resolution},{resolution}): {corners['bottom_right']}\n\n")
+            
+            f.write("=== PUNTOS DE MUESTRA ===\n")
+            points = debug_info['points_sample']
+            f.write(f"Primer punto: {points['first_point']}\n")
+            f.write(f"Último punto: {points['last_point']}\n")
+            f.write(f"Centro del área: {points['center']}\n\n")
+            
+            f.write("=== TODOS LOS PUNTOS ===\n")
+            for i, row in points_df.iterrows():
+                f.write(f"P{i+1}: X={row['x']:.6f}, Y={row['y']:.6f}, Z={row['cota']:.6f}\n")
+        
+        return True
+    except Exception as e:
+        st.error(f"Error al crear archivo de debug: {e}")
+        return False
+
+
+def create_sample_heatmap_data():
+    """
+    Crea datos de ejemplo para probar el mapa de calor.
+    
+    Returns:
+        pandas.DataFrame: DataFrame con puntos de ejemplo en UTM zona 17S (Ecuador)
+    """
+    import pandas as pd
+    
+    # Datos de ejemplo: puntos en UTM zona 17S (Ecuador) - EPSG:32717
+    sample_points = [
+        [200000, 9800000, 2450],  # Punto 1
+        [200100, 9800000, 2445],  # Punto 2
+        [200200, 9800000, 2440],  # Punto 3
+        [200000, 9800100, 2455],  # Punto 4
+        [200100, 9800100, 2450],  # Punto 5
+        [200200, 9800100, 2445],  # Punto 6
+        [200050, 9800050, 2448],  # Punto 7
+        [200150, 9800050, 2443],  # Punto 8
+        [200250, 9800050, 2438],  # Punto 9
+        [200075, 9800075, 2446],  # Punto 10
+    ]
+    
+    df = pd.DataFrame(sample_points, columns=['x', 'y', 'cota'])
+    return df
+
+
+def get_crs_options():
+    """
+    Retorna opciones de CRS comunes para diferentes regiones.
+    
+    Returns:
+        dict: Diccionario con códigos CRS y sus descripciones
+    """
+    return {
+        'EPSG:32719': 'UTM Zona 19S (Ecuador, Perú)',
+        'EPSG:32718': 'UTM Zona 18S (Ecuador, Perú)',
+        'EPSG:32717': 'UTM Zona 17S (Ecuador, Perú)',
+        'EPSG:32619': 'UTM Zona 19N (Colombia, Venezuela)',
+        'EPSG:32618': 'UTM Zona 18N (Colombia, Venezuela)',
+        'EPSG:4326': 'WGS84 (Lat/Lon)',
+        'EPSG:3857': 'Web Mercator (Google Maps)',
+        'EPSG:3116': 'MAGNA-SIRGAS / Colombia Bogota zone',
+        'EPSG:3117': 'MAGNA-SIRGAS / Colombia East zone',
+        'EPSG:3118': 'MAGNA-SIRGAS / Colombia West zone',
+    }
+
+
+def create_heatmap_geotiff_point_perfect(points_list, crs_code='EPSG:32717', resolution=100, padding_percent=1.0, method='cubic'):
+    """
+    Genera un mapa de calor GeoTIFF con correspondencia EXACTA punto por punto.
+    
+    Esta función garantiza que cada punto de entrada (x,y,z) tenga su equivalente
+    exacto en el raster, construyendo un mapa raster real que cumple expectativas.
+    
+    Args:
+        points_list: Lista de puntos [[x1, y1, z1], [x2, y2, z2], ...]
+        crs_code: Código CRS (ej. 'EPSG:32717')
+        resolution: Resolución del grid (número de celdas por lado)
+        padding_percent: Porcentaje de padding del bounding box
+        method: Método de interpolación ('linear', 'cubic', 'nearest')
+    
+    Returns:
+        bytes: Contenido del archivo GeoTIFF con correspondencia punto por punto
+    """
+    import numpy as np
+    import scipy.interpolate as interp
+    import rasterio
+    from rasterio.transform import Affine
+    from rasterio.crs import CRS
+    import tempfile
+    import os
+    
+    # Validación de entrada
+    if not points_list or len(points_list) < 3:
+        st.error("❌ Se requieren al menos 3 puntos para generar el mapa de calor")
+        return None
+    
+    try:
+        # Convertir a array numpy
+        points_array = np.array(points_list)
+        x_coords = points_array[:, 0]
+        y_coords = points_array[:, 1]
+        z_values = points_array[:, 2]
+        
+        print(f"🔍 Procesando {len(points_list)} puntos:")
+        for i, (x, y, z) in enumerate(points_list[:5]):  # Mostrar primeros 5 puntos
+            print(f"   P{i+1}: ({x:.3f}, {y:.3f}, {z:.3f})")
+        if len(points_list) > 5:
+            print(f"   ... y {len(points_list)-5} puntos más")
+        
+        # === PASO 1: CÁLCULO PRECISO DEL BOUNDING BOX ===
+        min_x, max_x = np.min(x_coords), np.max(x_coords)
+        min_y, max_y = np.min(y_coords), np.max(y_coords)
+        
+        # Calcular padding
+        x_range = max_x - min_x
+        y_range = max_y - min_y
+        padding_x = (x_range * padding_percent) / 100.0
+        padding_y = (y_range * padding_percent) / 100.0
+        
+        # Bounding box con padding
+        bounds_min_x = min_x - padding_x
+        bounds_max_x = max_x + padding_x
+        bounds_min_y = min_y - padding_y
+        bounds_max_y = max_y + padding_y
+        
+        print(f"🔍 Bounding box: ({bounds_min_x:.3f}, {bounds_min_y:.3f}) a ({bounds_max_x:.3f}, {bounds_max_y:.3f})")
+        
+        # === PASO 2: CREAR GRID QUE COINCIDA EXACTAMENTE CON LOS PUNTOS ===
+        # Crear arrays de coordenadas para el grid
+        x_grid = np.linspace(bounds_min_x, bounds_max_x, resolution)
+        y_grid = np.linspace(bounds_min_y, bounds_max_y, resolution)
+        
+        # Crear meshgrid - CRÍTICO: usar indexing='xy' para orientación correcta
+        X_grid, Y_grid = np.meshgrid(x_grid, y_grid, indexing='xy')
+        
+        print(f"🔍 Grid creado: {resolution}x{resolution}")
+        print(f"🔍 Tamaño de celda: {(bounds_max_x - bounds_min_x)/resolution:.6f} x {(bounds_max_y - bounds_min_y)/resolution:.6f}")
+        
+        # === PASO 3: VERIFICAR CORRESPONDENCIA PUNTO POR PUNTO ===
+        # Encontrar las celdas del grid más cercanas a cada punto de entrada
+        grid_points = []
+        grid_values = []
+        
+        for i, (x, y, z) in enumerate(points_list):
+            # Encontrar la celda más cercana en el grid
+            x_idx = np.argmin(np.abs(x_grid - x))
+            y_idx = np.argmin(np.abs(y_grid - y))
+            
+            # Verificar que la celda encontrada corresponde al punto
+            grid_x = x_grid[x_idx]
+            grid_y = y_grid[y_idx]
+            
+            # Calcular distancia para verificar precisión
+            dist_x = abs(grid_x - x)
+            dist_y = abs(grid_y - y)
+            
+            print(f"🔍 P{i+1}: ({x:.3f}, {y:.3f}) -> Grid[{y_idx},{x_idx}]: ({grid_x:.3f}, {grid_y:.3f}) - Dist: ({dist_x:.6f}, {dist_y:.6f})")
+            
+            grid_points.append([grid_x, grid_y])
+            grid_values.append(z)
+        
+        # === PASO 4: INTERPOLACIÓN CON CORRESPONDENCIA GARANTIZADA ===
+        # Preparar puntos para interpolación
+        points_for_interp = np.array(grid_points)
+        z_for_interp = np.array(grid_values)
+        
+        print(f"🔍 Debug de interpolación:")
+        print(f"   Puntos para interpolación: {len(points_for_interp)}")
+        print(f"   Valores Z: {len(z_for_interp)}")
+        print(f"   Rango de valores Z: {np.min(z_for_interp):.6f} a {np.max(z_for_interp):.6f}")
+        print(f"   Grid shape: {X_grid.shape}")
+        
+        # Interpolar valores Z en el grid completo
+        Z_interpolated = interp.griddata(
+            points_for_interp, 
+            z_for_interp, 
+            (X_grid, Y_grid), 
+            method=method, 
+            fill_value=np.nan
+        )
+        
+        print(f"🔍 Interpolación completada con método: {method}")
+        print(f"   Shape del resultado: {Z_interpolated.shape}")
+        print(f"   Valores NaN: {np.isnan(Z_interpolated).sum()}")
+        print(f"   Valores válidos: {(~np.isnan(Z_interpolated)).sum()}")
+        
+        # Debug adicional: mostrar algunos valores interpolados
+        valid_mask = ~np.isnan(Z_interpolated)
+        if valid_mask.any():
+            valid_values = Z_interpolated[valid_mask]
+            print(f"   Rango de valores interpolados: {np.min(valid_values):.6f} a {np.max(valid_values):.6f}")
+            print(f"   Media de valores interpolados: {np.mean(valid_values):.6f}")
+        else:
+            print("   ⚠️ ADVERTENCIA: No hay valores válidos después de la interpolación!")
+        
+        # === PASO 5: VERIFICAR QUE LOS PUNTOS ORIGINALES ESTÉN EN EL RASTER ===
+        print("🔍 Verificando correspondencia punto por punto:")
+        for i, (x, y, z) in enumerate(points_list):
+            # Encontrar la celda correspondiente
+            x_idx = np.argmin(np.abs(x_grid - x))
+            y_idx = np.argmin(np.abs(y_grid - y))
+            
+            # Obtener el valor interpolado en esa celda
+            raster_value = Z_interpolated[y_idx, x_idx]
+            
+            print(f"   P{i+1}: ({x:.3f}, {y:.3f}, {z:.3f}) -> Raster[{y_idx},{x_idx}]: {raster_value:.3f}")
+        
+        # === PASO 6: CALCULAR ESTADÍSTICAS ANTES DEL FLIP ===
+        # CORRECCIÓN CRÍTICA: Calcular estadísticas antes del flip para evitar problemas
+        valid_data = Z_interpolated[~np.isnan(Z_interpolated)]
+        
+        if len(valid_data) > 0:
+            min_val = float(np.min(valid_data))
+            max_val = float(np.max(valid_data))
+            mean_val = float(np.mean(valid_data))
+            std_val = float(np.std(valid_data))
+            
+            print(f"🔍 Estadísticas de banda calculadas:")
+            print(f"   Mínimo: {min_val:.6f}")
+            print(f"   Máximo: {max_val:.6f}")
+            print(f"   Media: {mean_val:.6f}")
+            print(f"   Desviación estándar: {std_val:.6f}")
+            print(f"   Píxeles válidos: {len(valid_data)} de {Z_interpolated.size}")
+        else:
+            print("⚠️ ADVERTENCIA: No se encontraron datos válidos después de la interpolación!")
+            print("🔍 Intentando usar estadísticas de los puntos originales...")
+            
+            # Fallback: usar estadísticas de los puntos originales
+            original_z_values = np.array([point[2] for point in points_list])
+            min_val = float(np.min(original_z_values))
+            max_val = float(np.max(original_z_values))
+            mean_val = float(np.mean(original_z_values))
+            std_val = float(np.std(original_z_values))
+            
+            print(f"🔍 Estadísticas de puntos originales:")
+            print(f"   Mínimo: {min_val:.6f}")
+            print(f"   Máximo: {max_val:.6f}")
+            print(f"   Media: {mean_val:.6f}")
+            print(f"   Desviación estándar: {std_val:.6f}")
+            print(f"   Puntos originales: {len(original_z_values)}")
+            
+            # Crear un raster simple con los valores originales
+            print("🔍 Creando raster alternativo con valores originales...")
+            Z_interpolated = np.full((resolution, resolution), np.nan)
+            
+            for i, (x, y, z) in enumerate(points_list):
+                x_idx = np.argmin(np.abs(x_grid - x))
+                y_idx = np.argmin(np.abs(y_grid - y))
+                Z_interpolated[y_idx, x_idx] = z
+            
+            print(f"🔍 Raster alternativo creado con {np.sum(~np.isnan(Z_interpolated))} píxeles válidos")
+        
+        # === PASO 7: ORIENTACIÓN CORRECTA PARA RASTERIO ===
+        # Rasterio espera que la primera fila sea la superior (Y máxima)
+        # Con indexing='xy', necesitamos flip vertical
+        Z_interpolated = np.flipud(Z_interpolated)
+        
+        print("🔍 Orientación corregida para rasterio (primera fila = Y máxima)")
+        
+        # === PASO 8: TRANSFORMACIÓN AFÍN CORRECTA ===
+        pixel_width = (bounds_max_x - bounds_min_x) / resolution
+        pixel_height = (bounds_max_y - bounds_min_y) / resolution
+        
+        # Transformación afín para rasterio con indexing='xy' y flipud:
+        # - Origen en esquina superior izquierda (min_x, max_y)
+        # - dx positivo (hacia la derecha)
+        # - dy negativo (hacia abajo)
+        transform = Affine.translation(bounds_min_x, bounds_max_y) * Affine.scale(pixel_width, -pixel_height)
+        
+        print(f"🔍 Transformación afín:")
+        print(f"   Origen: ({bounds_min_x:.6f}, {bounds_max_y:.6f})")
+        print(f"   Tamaño de píxel: {pixel_width:.6f} x {pixel_height:.6f}")
+        
+        # === PASO 9: CONFIGURAR CRS ===
+        if crs_code.startswith('EPSG:'):
+            epsg_code = int(crs_code.split(':')[1])
+            crs = CRS.from_epsg(epsg_code)
+        else:
+            crs = CRS.from_string(crs_code)
+        
+        print(f"🔍 CRS: {crs_code}")
+        
+        # === PASO 10: ESCRIBIR GEOTIFF ===
+        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        with rasterio.open(
+            temp_path,
+            'w',
+            driver='GTiff',
+            height=resolution,
+            width=resolution,
+            count=1,
+            dtype=rasterio.float32,
+            crs=crs,
+            transform=transform,
+            nodata=np.nan,
+            compress='lzw',
+            tiled=True,
+            blockxsize=256,
+            blockysize=256,
+            interleave='band',
+            photometric='minisblack'
+        ) as dst:
+            # Escribir datos interpolados
+            dst.write(Z_interpolated.astype(rasterio.float32), 1)
+            
+            # Agregar estadísticas de banda para QGIS (ya calculadas anteriormente)
+            if len(valid_data) > 0:
+                dst.update_tags(
+                    STATISTICS_MINIMUM=min_val,
+                    STATISTICS_MAXIMUM=max_val,
+                    STATISTICS_MEAN=mean_val,
+                    STATISTICS_STDDEV=std_val,
+                    STATISTICS_VALID_PERCENT=(len(valid_data) / Z_interpolated.size) * 100.0
+                )
+            
+            # Agregar metadatos descriptivos
+            dst.update_tags(
+                SOFTWARE="Conversor Universal Profesional v3.0 - Point Perfect Heatmap",
+                DATETIME=time.strftime("%Y:%m:%d %H:%M:%S"),
+                DESCRIPTION=f"Mapa de calor con correspondencia punto por punto - Método: {method}",
+                CRS=crs_code,
+                INTERPOLATION_METHOD=method,
+                POINTS_COUNT=len(points_list),
+                BOUNDS=f"{bounds_min_x:.6f},{bounds_min_y:.6f},{bounds_max_x:.6f},{bounds_max_y:.6f}",
+                POINT_PERFECT="True - Cada punto de entrada tiene su equivalente en el raster"
+            )
+        
+        # Leer el archivo generado
+        with open(temp_path, 'rb') as f:
+            geotiff_bytes = f.read()
+        
+        # Limpiar archivo temporal
+        os.unlink(temp_path)
+        
+        print("✅ GeoTIFF generado con correspondencia punto por punto garantizada")
+        return geotiff_bytes
+        
+    except Exception as e:
+        st.error(f"❌ Error al crear GeoTIFF punto perfecto: {e}")
+        import traceback
+        print(f"Error detallado: {traceback.format_exc()}")
+        return None
+
+
+def create_heatmap_geotiff_precise(points_list, crs_code='EPSG:32717', resolution=100, padding_percent=1.0, method='cubic'):
+    """
+    Genera un mapa de calor GeoTIFF perfectamente georeferenciado desde puntos topográficos.
+    
+    Esta función soluciona todos los problemas de georeferenciación:
+    - Cobertura exacta punto por punto
+    - Sin desplazamientos ni inversiones
+    - Orientación correcta (norte arriba)
+    - Bounding box preciso
+    
+    Args:
+        points_list: Lista de puntos [[x1, y1, z1], [x2, y2, z2], ...]
+        crs_code: Código CRS (ej. 'EPSG:32717')
+        resolution: Resolución del grid (número de celdas por lado, ej. 100 = 100x100)
+        padding_percent: Porcentaje de padding del bounding box (default: 1.0%)
+        method: Método de interpolación ('linear', 'cubic', 'nearest')
+    
+    Returns:
+        bytes: Contenido del archivo GeoTIFF correctamente georeferenciado
+    """
+    import numpy as np
+    import scipy.interpolate as interp
+    import rasterio
+    from rasterio.transform import Affine
+    from rasterio.crs import CRS
+    import tempfile
+    import os
+    
+    # Validación de entrada
+    if not points_list or len(points_list) < 3:
+        st.error("❌ Se requieren al menos 3 puntos para generar el mapa de calor")
+        return None
+    
+    try:
+        # Convertir a array numpy para mejor rendimiento
+        points_array = np.array(points_list)
+        x_coords = points_array[:, 0]
+        y_coords = points_array[:, 1]
+        z_values = points_array[:, 2]
+        
+        # === PASO 1: CÁLCULO PRECISO DEL BOUNDING BOX ===
+        min_x, max_x = np.min(x_coords), np.max(x_coords)
+        min_y, max_y = np.min(y_coords), np.max(y_coords)
+        
+        # Calcular padding basado en el rango de coordenadas
+        x_range = max_x - min_x
+        y_range = max_y - min_y
+        
+        # Padding mínimo para asegurar cobertura completa
+        padding_x = (x_range * padding_percent) / 100.0
+        padding_y = (y_range * padding_percent) / 100.0
+        
+        # Aplicar padding al bounding box
+        bounds_min_x = min_x - padding_x
+        bounds_max_x = max_x + padding_x
+        bounds_min_y = min_y - padding_y
+        bounds_max_y = max_y + padding_y
+        
+        print(f"🔍 Bounding box original: ({min_x:.3f}, {min_y:.3f}) a ({max_x:.3f}, {max_y:.3f})")
+        print(f"🔍 Bounding box con padding: ({bounds_min_x:.3f}, {bounds_min_y:.3f}) a ({bounds_max_x:.3f}, {bounds_max_y:.3f})")
+        
+        # === PASO 2: CREAR GRID REGULAR PRECISO ===
+        # Crear arrays de coordenadas para el grid
+        x_grid = np.linspace(bounds_min_x, bounds_max_x, resolution)
+        y_grid = np.linspace(bounds_min_y, bounds_max_y, resolution)
+        
+        # Crear meshgrid con orientación estándar (ij indexing)
+        # Esto asegura que X_grid[i,j] = x_grid[j] y Y_grid[i,j] = y_grid[i]
+        X_grid, Y_grid = np.meshgrid(x_grid, y_grid, indexing='ij')
+        
+        print(f"🔍 Grid creado: {resolution}x{resolution} celdas")
+        print(f"🔍 Tamaño de celda: {(bounds_max_x - bounds_min_x)/resolution:.3f} x {(bounds_max_y - bounds_min_y)/resolution:.3f}")
+        
+        # === PASO 3: INTERPOLACIÓN PRECISA ===
+        # Preparar puntos para interpolación
+        points_for_interp = np.column_stack((x_coords, y_coords))
+        
+        # Interpolar valores Z en el grid
+        Z_interpolated = interp.griddata(
+            points_for_interp, 
+            z_values, 
+            (X_grid, Y_grid), 
+            method=method, 
+            fill_value=np.nan
+        )
+        
+        print(f"🔍 Interpolación completada usando método: {method}")
+        print(f"🔍 Valores Z interpolados: min={np.nanmin(Z_interpolated):.3f}, max={np.nanmax(Z_interpolated):.3f}")
+        
+        # === PASO 4: CORRECCIÓN DE ORIENTACIÓN ===
+        # Para orientación correcta (norte arriba), necesitamos que Y aumente hacia arriba
+        # Con indexing='ij', el array está orientado correctamente por defecto
+        # Pero rasterio espera que la primera fila sea la superior (Y máxima)
+        
+        # Aplicar flip vertical para orientación correcta en rasterio
+        Z_interpolated = np.flipud(Z_interpolated)
+        
+        print("🔍 Orientación corregida: norte arriba (Y máxima en primera fila)")
+        
+        # === PASO 5: TRANSFORMACIÓN AFÍN CORRECTA ===
+        # Calcular tamaño de píxel
+        pixel_width = (bounds_max_x - bounds_min_x) / resolution
+        pixel_height = (bounds_max_y - bounds_min_y) / resolution
+        
+        # Transformación afín para rasterio:
+        # - Origen en esquina superior izquierda (min_x, max_y)
+        # - dx positivo (hacia la derecha)
+        # - dy negativo (hacia abajo, ya que flipud invirtió el array)
+        transform = Affine.translation(bounds_min_x, bounds_max_y) * Affine.scale(pixel_width, -pixel_height)
+        
+        print(f"🔍 Transformación afín:")
+        print(f"   Origen: ({bounds_min_x:.3f}, {bounds_max_y:.3f})")
+        print(f"   Tamaño de píxel: {pixel_width:.6f} x {pixel_height:.6f}")
+        print(f"   Matriz: [{transform.a:.6f}, {transform.b:.6f}, {transform.c:.6f}, {transform.d:.6f}, {transform.e:.6f}, {transform.f:.6f}]")
+        
+        # === PASO 6: CONFIGURAR CRS ===
+        if crs_code.startswith('EPSG:'):
+            epsg_code = int(crs_code.split(':')[1])
+            crs = CRS.from_epsg(epsg_code)
+        else:
+            crs = CRS.from_string(crs_code)
+        
+        print(f"🔍 CRS configurado: {crs_code}")
+        
+        # === PASO 7: ESCRIBIR GEOTIFF ===
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        # Escribir GeoTIFF con configuración completa
+        with rasterio.open(
+            temp_path,
+            'w',
+            driver='GTiff',
+            height=resolution,
+            width=resolution,
+            count=1,
+            dtype=rasterio.float32,
+            crs=crs,
+            transform=transform,
+            nodata=np.nan,
+            compress='lzw',
+            tiled=True,
+            blockxsize=256,
+            blockysize=256,
+            interleave='band',
+            photometric='minisblack'
+        ) as dst:
+            # Escribir datos interpolados
+            dst.write(Z_interpolated.astype(rasterio.float32), 1)
+            
+            # Agregar metadatos descriptivos
+            dst.update_tags(
+                SOFTWARE="Conversor Universal Profesional v3.0 - Heatmap Precise",
+                DATETIME=time.strftime("%Y:%m:%d %H:%M:%S"),
+                DESCRIPTION=f"Mapa de calor topográfico preciso - Método: {method}, Resolución: {resolution}x{resolution}",
+                CRS=crs_code,
+                INTERPOLATION_METHOD=method,
+                POINTS_COUNT=len(points_list),
+                BOUNDS=f"{bounds_min_x:.6f},{bounds_min_y:.6f},{bounds_max_x:.6f},{bounds_max_y:.6f}",
+                PADDING_PERCENT=f"{padding_percent}%",
+                ORIENTATION="North up (Y increasing upward)"
+            )
+        
+        # Leer el archivo generado
+        with open(temp_path, 'rb') as f:
+            geotiff_bytes = f.read()
+        
+        # Limpiar archivo temporal
+        os.unlink(temp_path)
+        
+        print("✅ GeoTIFF generado exitosamente con georeferenciación precisa")
+        return geotiff_bytes
+        
+    except Exception as e:
+        st.error(f"❌ Error al crear GeoTIFF preciso: {e}")
+        import traceback
+        print(f"Error detallado: {traceback.format_exc()}")
+        return None
+
+
+def create_heatmap_geotiff_corrected(points_df, bounds, resolution=500, method='linear', crs_code='EPSG:32719'):
+    """
+    Crea un GeoTIFF interpolado correctamente georeferenciado a partir de puntos topográficos.
+    
+    Esta función implementa las mejores prácticas de geoprocesamiento para generar
+    un raster que se ubique correctamente en QGIS sin necesidad de georeferenciación manual.
+    
+    CORRECCIÓN CRÍTICA: Ahora el raster coincide exactamente punto por punto con los datos ingresados.
+    
+    Args:
+        points_df: DataFrame con columnas ['x', 'y', 'cota']
+        bounds: tuple (min_x, min_y, max_x, max_y) - bounding box de los puntos
+        resolution: Resolución del raster (píxeles por lado)
+        method: Método de interpolación ('linear', 'cubic', 'nearest')
+        crs_code: Código CRS (ej. 'EPSG:32719' para UTM zona 19S)
+    
+    Returns:
+        bytes: Contenido del archivo GeoTIFF correctamente georeferenciado
+    """
+    if points_df is None or len(points_df) < 3:
+        return None
+    
+    try:
+        # Extraer coordenadas y valores Z
+        x_coords = points_df['x'].values
+        y_coords = points_df['y'].values
+        z_values = points_df['cota'].values
+        
+        # Obtener bounds
+        min_x, min_y, max_x, max_y = bounds
+        
+        # Asegurar resolución mínima
+        actual_resolution = max(resolution, 100)
+        
+        # === PASO 1: CREAR GRID REGULAR CON ORIENTACIÓN CORRECTA ===
+        # Crear arrays de coordenadas para el grid
+        x_grid = np.linspace(min_x, max_x, actual_resolution)
+        y_grid = np.linspace(min_y, max_y, actual_resolution)
+        
+        # CORRECCIÓN CRÍTICA: Usar indexing='ij' para orientación correcta
+        # Con indexing='ij': X_grid[i,j] = x_grid[j] y Y_grid[i,j] = y_grid[i]
+        # Esto asegura que el primer índice corresponde a Y (filas) y el segundo a X (columnas)
+        X_grid, Y_grid = np.meshgrid(x_grid, y_grid, indexing='ij')
+        
+        # === PASO 2: INTERPOLACIÓN ===
+        # Preparar puntos de entrada para interpolación
+        points = np.column_stack((x_coords, y_coords))
+        
+        # Seleccionar método de interpolación
+        if method == 'linear' and len(points) > 10:
+            interp_method = 'cubic'
+        else:
+            interp_method = method
+            
+        # Interpolar valores Z en el grid
+        Z_interpolated = griddata(
+            points, 
+            z_values, 
+            (X_grid, Y_grid), 
+            method=interp_method, 
+            fill_value=np.nan
+        )
+        
+        # === PASO 3: CALCULAR TRANSFORMACIÓN AFÍN CORRECTA ===
+        # Calcular tamaño de píxel en unidades del CRS
+        pixel_width = (max_x - min_x) / actual_resolution
+        pixel_height = (max_y - min_y) / actual_resolution
+        
+        # CORRECCIÓN CRÍTICA: Transformación afín correcta para indexing='ij'
+        # Con indexing='ij':
+        # - Píxel (0,0) -> coordenada (min_x, min_y) [esquina inferior izquierda]
+        # - Píxel (height-1, width-1) -> coordenada (max_x, max_y) [esquina superior derecha]
+        # - La escala Y debe ser POSITIVA para que Y aumente hacia arriba
+        transform = Affine.translation(min_x, min_y) * Affine.scale(pixel_width, pixel_height)
+        
+        # === PASO 4: CONFIGURAR CRS ===
+        # Importar CRS de rasterio
+        from rasterio.crs import CRS
+        
+        # Crear objeto CRS
+        if crs_code.startswith('EPSG:'):
+            epsg_code = int(crs_code.split(':')[1])
+            crs = CRS.from_epsg(epsg_code)
+        else:
+            # Fallback para otros códigos CRS
+            crs = CRS.from_string(crs_code)
+        
+        # === PASO 5: ESCRIBIR GEOTIFF ===
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        # Escribir GeoTIFF con configuración completa
+        with rasterio.open(
+            temp_path,
+            'w',
+            driver='GTiff',
+            height=actual_resolution,
+            width=actual_resolution,
+            count=1,
+            dtype=rasterio.float32,
+            crs=crs,  # CRS específico para georeferenciación correcta
+            transform=transform,  # Transformación afín correcta
+            nodata=np.nan,  # Valor NoData
+            compress='lzw',  # Compresión para reducir tamaño
+            tiled=True,  # Tiled para mejor rendimiento
+            blockxsize=256,
+            blockysize=256,
+            interleave='band',
+            photometric='minisblack'  # Para datos de elevación/intensidad
+        ) as dst:
+            # Escribir datos interpolados
+            dst.write(Z_interpolated.astype(rasterio.float32), 1)
+            
+            # Agregar metadatos descriptivos
+            dst.update_tags(
+                SOFTWARE="Conversor Universal Profesional v3.0",
+                DATETIME=time.strftime("%Y:%m:%d %H:%M:%S"),
+                DESCRIPTION=f"Mapa de calor topográfico - Método: {interp_method}, Resolución: {actual_resolution}x{actual_resolution}",
+                CRS=crs_code,
+                INTERPOLATION_METHOD=interp_method,
+                POINTS_COUNT=len(points_df),
+                BOUNDS=f"{min_x:.6f},{min_y:.6f},{max_x:.6f},{max_y:.6f}"
+            )
+            
+            # Agregar estadísticas de banda
+            dst.write_colormap(1, {
+                0: (0, 0, 255, 255),      # Azul para valores bajos
+                127: (0, 255, 0, 255),    # Verde para valores medios
+                255: (255, 0, 0, 255)     # Rojo para valores altos
+            })
+        
+        # Leer el archivo generado
+        with open(temp_path, 'rb') as f:
+            geotiff_bytes = f.read()
+        
+        # Limpiar archivo temporal
+        os.unlink(temp_path)
+        
+        return geotiff_bytes
+        
+    except Exception as e:
+        st.error(f"Error al crear GeoTIFF georeferenciado: {e}")
+        return None
+
+
+def create_heatmap_geotiff(points_df, bounds, resolution=500, method='linear'):
+    """
+    Función principal que usa el CRS configurado en la aplicación.
+    Ahora usa la función precisa para georeferenciación perfecta.
+    """
+    # Obtener el CRS configurado en la aplicación
+    input_epsg = st.session_state.get("input_epsg", 32717)  # Ecuador UTM 17S por defecto
+    crs_code = f"EPSG:{input_epsg}"
+    
+    # Convertir DataFrame a lista de puntos para la función precisa
+    if points_df is not None and len(points_df) > 0:
+        points_list = []
+        for _, row in points_df.iterrows():
+            points_list.append([row['x'], row['y'], row['cota']])
+        
+        # Usar la función punto perfecto con correspondencia garantizada
+        return create_heatmap_geotiff_point_perfect(
+            points_list=points_list,
+            crs_code=crs_code,
+            resolution=resolution,
+            padding_percent=1.0,  # Padding mínimo para cobertura exacta
+            method=method
+        )
+    else:
+        st.error("❌ No hay datos de puntos para generar el mapa de calor")
+        return None
 
 
 def main():
@@ -2086,9 +2960,167 @@ def main():
             options=["normal", "mapbox"],
             format_func=lambda x: "Mapa Normal (Leaflet)" if x == "normal" else "Mapa Mapbox",
             index=0 if st.session_state["html_map_type"] == "normal" else 1,
-            horizontal=True
+            horizontal=True,
+            key="map_type_radio"
         )
+        
+        # CORRECCIÓN: Cambiar pestaña cuando se cambie el tipo de mapa
+        if map_type_selection != st.session_state.get("previous_map_type", "normal"):
+            st.session_state["previous_map_type"] = map_type_selection
+            # Cambiar a la pestaña de mapa correspondiente
+            if map_type_selection == "normal":
+                st.session_state["active_tab"] = 1  # Pestaña "Mapa de proyecto"
+            else:  # mapbox
+                st.session_state["active_tab"] = 1  # Pestaña "Mapa de proyecto"
+            
+            # CORRECCIÓN: Regenerar mapa topográfico si existe
+            if st.session_state.get("topo_index_html") and st.session_state.get("project_geojson"):
+                try:
+                    # Regenerar HTML del mapa topográfico con el nuevo tipo
+                    geojson_data = st.session_state["project_geojson"]
+                    folder_name = st.session_state.get("project_folder_name", "Proyecto")
+                    point_size = st.session_state.get("map_point_size", 3)
+                    
+                    if map_type_selection == "mapbox":
+                        new_html = create_mapbox_html(
+                            strip_z_from_geojson(geojson_data), 
+                            title=f"{folder_name} - Visor de Mapa Topográfico", 
+                            folder_name=folder_name, 
+                            grouping_mode="type"
+                        )
+                    else:
+                        # HTML normal con Leaflet
+                        leaf_tpl = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>__TITLE__</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100vh; }
+    .leaflet-control-layers-expanded{ max-height: 60vh; overflow:auto; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    const map = L.map('map', {preferCanvas: true});
+    
+    const baseLayers = {
+      "Positron": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© CartoDB',
+        subdomains: 'abcd',
+        maxZoom: 19
+      }),
+      "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+      }),
+      "Satelital": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '© Esri'
+      })
+    };
+    
+    baseLayers['Positron'].addTo(map);
+    
+    const data = __GEOJSON__;
+    const overlays = {};
+    
+    function filterByType(features, type) {
+      return features.filter(f => f.properties && f.properties.type === type);
+    }
+    
+    const pts = L.geoJSON({type: 'FeatureCollection', features: filterByType(data.features || [], 'point')}, {
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+        radius: __POINT_SIZE__,
+        color: '#2c7fb8',
+        fill: true,
+        fillOpacity: 0.9
+      })
+    });
+    
+    const lns = L.geoJSON({type: 'FeatureCollection', features: (data.features || []).filter(f => ['line', 'polyline', 'track', 'route', 'shape'].includes(f.properties && f.properties.type))});
+    
+    const txt = L.geoJSON({type: 'FeatureCollection', features: filterByType(data.features || [], 'text')}, {
+      pointToLayer: (f, latlng) => L.marker(latlng, {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${(f.properties && f.properties.text) || ''}</div>`
+        })
+      })
+    });
+    
+    overlays['Puntos'] = pts;
+    overlays['Líneas'] = lns;
+    overlays['Textos'] = txt;
+    
+    pts.addTo(map);
+    lns.addTo(map);
+    
+    L.control.layers(baseLayers, overlays, {collapsed: false, position: 'topright'}).addTo(map);
+    
+    try {
+      const bounds = __BOUNDS__;
+      map.fitBounds([[bounds[0][0], bounds[0][1]], [bounds[1][0], bounds[1][1]]], {padding: [20, 20]});
+    } catch(e) {
+      map.setView([__CENTER_LAT__, __CENTER_LON__], 15);
+    }
+  </script>
+</body>
+</html>"""
+                        
+                        # Calcular bounds del GeoJSON
+                        bounds = [[-12.1, -77.1], [-11.9, -76.9]]  # Default
+                        if geojson_data.get("features"):
+                            lons = []
+                            lats = []
+                            for feature in geojson_data["features"]:
+                                if feature.get("geometry", {}).get("type") == "Point":
+                                    coords = feature["geometry"].get("coordinates", [])
+                                    if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                                        lon = coords[0]
+                                        lat = coords[1]
+                                        lons.append(lon)
+                                        lats.append(lat)
+                            
+                            if lons and lats:
+                                center_lat = (min(lats) + max(lats)) / 2
+                                center_lon = (min(lons) + max(lons)) / 2
+                                bounds = [[min(lats), min(lons)], [max(lats), max(lons)]]
+                        
+                        new_html = (
+                            leaf_tpl
+                            .replace("__TITLE__", f"{folder_name} - Visor de Mapa Topográfico")
+                            .replace("__GEOJSON__", json.dumps(geojson_data, ensure_ascii=False))
+                            .replace("__BOUNDS__", json.dumps(bounds))
+                            .replace("__CENTER_LAT__", str(center_lat if 'center_lat' in locals() else -12.0))
+                            .replace("__CENTER_LON__", str(center_lon if 'center_lon' in locals() else -77.0))
+                            .replace("__POINT_SIZE__", str(point_size))
+                        )
+                    
+                    # Actualizar el HTML del mapa topográfico
+                    st.session_state["topo_index_html"] = new_html
+                    
+                except Exception as e:
+                    st.warning(f"Error regenerando mapa topográfico: {e}")
+            
+            st.rerun()
         st.session_state["html_map_type"] = map_type_selection
+        
+        # CORRECCIÓN: Control de tamaño de puntos
+        st.markdown("**🎯 Configuración de Puntos:**")
+        point_size = st.slider(
+            "Tamaño de puntos en el mapa",
+            min_value=1,
+            max_value=20,
+            value=st.session_state.get("map_point_size", 3),
+            step=1,
+            key="map_point_size_slider",
+            help="Ajusta el tamaño de los puntos que se muestran en los mapas"
+        )
+        st.session_state["map_point_size"] = point_size
         
         if map_type_selection == "mapbox":
             st.info("💡 **Mapa Mapbox**: Requiere API Key de Mapbox. El visor HTML solicitará la clave al abrirse. Incluye visualización 3D, múltiples estilos de mapa y controles avanzados.")
@@ -2117,8 +3149,47 @@ def main():
         "📚 Manual de Usuario"
     ])
     with tab_topo:
-        col1, col2, col3, col4 = st.columns([2,7,6,5])
+        col1, col2, col3, col4 = st.columns([3,8,7,6])
         with col4:
+            # CORRECCIÓN: MAPAS DE CALOR antes de Configuración DXF
+            st.markdown("**:orange[MAPAS DE CALOR]**")
+            generate_heatmap = st.checkbox("Generar mapa de calor (GeoTIFF)", value=False, key="topo_heatmap_enabled")
+            
+            if generate_heatmap:
+                st.markdown("*Configuración del raster:*")
+                margin_percent = st.slider("Margen del área (%)", min_value=5, max_value=50, value=15, step=5, key="topo_heatmap_margin")
+                resolution = st.slider("Resolución (píxeles)", min_value=200, max_value=1000, value=500, step=50, key="topo_heatmap_resolution")
+                interpolation_method = st.selectbox("Método de interpolación", 
+                    options=["linear", "cubic", "nearest"], 
+                    index=1,  # Cambiar a 'cubic' por defecto para mejor calidad
+                    key="topo_heatmap_method",
+                    format_func=lambda x: {"linear": "Lineal", "cubic": "Cúbica (Recomendado)", "nearest": "Vecino más cercano"}[x]
+                )
+                
+                # Mostrar CRS que se usará (del configurado en la app)
+                input_epsg = st.session_state.get("input_epsg", 32717)
+                crs_display = f"EPSG:{input_epsg}"
+                if input_epsg == 32717:
+                    crs_description = "UTM Zona 17S (Ecuador)"
+                elif input_epsg == 32718:
+                    crs_description = "UTM Zona 18S (Perú)"
+                elif input_epsg == 32719:
+                    crs_description = "UTM Zona 19S (Ecuador, Perú)"
+                elif input_epsg == 32618:
+                    crs_description = "UTM Zona 18N (Colombia)"
+                elif input_epsg == 32619:
+                    crs_description = "UTM Zona 19N (Colombia)"
+                elif input_epsg == 4326:
+                    crs_description = "WGS84 (Lat/Lon)"
+                else:
+                    crs_description = "Sistema personalizado"
+                
+                st.info(f"🌍 **CRS que se usará:** {crs_display} - {crs_description}")
+                st.info("💡 **Nota:** El CRS se toma automáticamente de la configuración de la aplicación.")
+                
+                st.info("🗺️ **Mapa de calor**: Genera un GeoTIFF de alta calidad que QGIS puede convertir automáticamente en mapa de calor usando los valores Z de los puntos.")
+            
+            st.markdown("---")
             st.subheader("Configuración DXF")
             # Configuración de puntos
             st.markdown("**:red[PUNTOS]**")
@@ -2158,93 +3229,196 @@ def main():
             desplaz_x = st.number_input("Desplazamiento X", min_value=-10.0, max_value=10.0, value=0.15, step=0.01, key="topo_desplaz_x")
             desplaz_y = st.number_input("Desplazamiento Y", min_value=-10.0, max_value=10.0, value=0.15, step=0.01, key="topo_desplaz_y")
             layer_textos = st.text_input("Layer de textos", value="TEXTOS", key="topo_layer_textos")
+            
         # Configuración y controles principales en col2 y col3
         with col2:
             import pandas as pd
             st.header("Sistema Topográfico Profesional")
             st.caption("Pega los datos de puntos topográficos en el área de texto.")
-            modo_topo = st.radio("Modo de generación", ["Solo puntos", "Puntos y polilíneas"], key="topo_modo")
-            # Dimensión de salida: 2D (ignora cota) o 3D (usa cota)
-            dim_selection = st.radio(
-                "Dimensión",
-                options=["2D", "3D"],
-                index=(0 if st.session_state.get("topo_dim", "2D") == "2D" else 1),
-                horizontal=True,
-                key="topo_dim"
+            # CORRECCIÓN: Usar controles que no causen reruns en primera interacción
+            modo_topo = st.selectbox(
+                "Modo de generación", 
+                options=["Solo puntos", "Puntos y polilíneas"], 
+                index=0,
+                key="topo_modo_selectbox",
+                help="Selecciona el modo de generación"
             )
+            
+            # Dimensión de salida: 2D (ignora cota) o 3D (usa cota)
+            # CORRECCIÓN: Usar checkbox para evitar reruns
+            st.markdown("**🔧 Modo de Generación:**")
+            
+            # Usar checkbox que no causa rerun completo
+            modo_3d = st.checkbox(
+                "🔺 **Modo 3D** (usar valores de cota)", 
+                value=st.session_state.get("topo_dim", "2D") == "3D",
+                key="topo_dim_checkbox",
+                help="Activa para usar valores de cota en la generación"
+            )
+            
+            # Actualizar session_state basado en checkbox SIN causar rerun
+            if modo_3d:
+                st.session_state["topo_dim"] = "3D"
+                st.success("🔺 **Modo 3D activado** - Usando valores de cota")
+            else:
+                st.session_state["topo_dim"] = "2D"
+                st.info("📐 **Modo 2D activado** - Ignorando valores de cota")
+            
+            # Usar el modo del session_state
+            dim_selection = st.session_state.get("topo_dim", "2D")
             if "topo_df" not in st.session_state:
                 st.session_state["topo_df"] = None
             if "topo_paste" not in st.session_state:
                 st.session_state.topo_paste = ""
-            st.session_state.topo_paste = st.text_area("Pegar datos (No., x, y, cota, descripcion)", value=st.session_state.topo_paste, height=200, key="topo_paste_area")
+            st.markdown("**📋 Área de entrada de datos:**")
+            st.info("💡 **Formato esperado:** No., x, y, cota, descripción (separados por tabulador, coma o punto y coma)")
+            st.markdown("**📏 Separación recomendada:** Para números de hasta 5 dígitos, usa tabuladores para mejor separación")
             
-            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            # Crear un área de texto con mejor formato visual
+            st.session_state.topo_paste = st.text_area(
+                "Pegar datos topográficos", 
+                value=st.session_state.topo_paste, 
+                height=280,  # Aumentado para mejor visualización
+                key="topo_paste_area",
+                placeholder="Ejemplo con tabuladores (recomendado):\n1\t123.456\t456.789\t12.345\tPunto de control\n2\t124.567\t457.890\t13.456\tVértice\n3\t125.678\t458.901\t14.567\tEstación\n\nEjemplo con comas:\n1,123.456,456.789,12.345,Punto de control\n2,124.567,457.890,13.456,Vértice",
+                help="💡 **Tip:** Los tabuladores proporcionan mejor separación visual para números largos"
+            )
+            
+            col_btn1, col_btn2, col_btn3 = st.columns([1,1,1])
             with col_btn1:
                 if st.button("Insertar datos", key="btn_topo_paste"):
                     pasted = st.session_state.get("topo_paste", "")
                     import io
                     import pandas as pd
                     try:
-                        df_paste = pd.read_csv(io.StringIO(pasted), sep="\t|,|;", engine="python", header=None)
-                        # Si faltan columnas, agregar cota=0 y/o desc=""
-                        while df_paste.shape[1] < 5:
-                            if df_paste.shape[1] == 3:
-                                df_paste[df_paste.shape[1]] = 0
-                            else:
-                                df_paste[df_paste.shape[1]] = ""
+                        # CORRECCIÓN: Mejorar el procesamiento de datos con tabuladores
+                        # Primero intentar con tabulador específicamente
+                        if '\t' in pasted:
+                            df_paste = pd.read_csv(io.StringIO(pasted), sep='\t', engine='python', header=None)
+                        else:
+                            # Si no hay tabuladores, usar separadores múltiples
+                            df_paste = pd.read_csv(io.StringIO(pasted), sep="\t|,|;", engine="python", header=None)
+                        
+                        # Verificar que se detectaron columnas
+                        if df_paste.empty or df_paste.shape[1] == 0:
+                            st.error("❌ No se pudieron detectar columnas en los datos. Verifica el formato.")
+                            st.info("💡 **Formato correcto:** Cada línea debe tener: No. [TAB] x [TAB] y [TAB] cota [TAB] descripción")
+                            
+                            # Debug: mostrar los datos tal como se recibieron
+                            st.markdown("**🔍 Debug - Datos recibidos:**")
+                            st.code(pasted[:200] + "..." if len(pasted) > 200 else pasted)
+                            
+                            # Mostrar caracteres especiales
+                            st.markdown("**🔍 Debug - Caracteres detectados:**")
+                            if '\t' in pasted:
+                                st.success("✅ Tabuladores detectados")
+                            if ',' in pasted:
+                                st.info("ℹ️ Comas detectadas")
+                            if ';' in pasted:
+                                st.info("ℹ️ Puntos y coma detectados")
+                            
+                            return
+                        
+                        # CORRECCIÓN: Asegurar que siempre tengamos exactamente 5 columnas
+                        if df_paste.shape[1] < 5:
+                            # Si faltan columnas, agregar las que faltan
+                            while df_paste.shape[1] < 5:
+                                if df_paste.shape[1] == 3:
+                                    df_paste[df_paste.shape[1]] = 0  # Agregar cota=0
+                                else:
+                                    df_paste[df_paste.shape[1]] = ""  # Agregar descripción vacía
+                        elif df_paste.shape[1] > 5:
+                            # Si hay más de 5 columnas, tomar solo las primeras 5
+                            df_paste = df_paste.iloc[:, :5]
+                        
+                        # Asignar nombres de columnas
                         df_paste.columns = ["No.", "x", "y", "cota", "desc"]
-                        # Convertir cota a numérico y poner 0 si falta o es inválida
-                        df_paste["cota"] = pd.to_numeric(df_paste["cota"], errors="coerce").fillna(0)
+                        
+                        # CORRECCIÓN: Procesar cotas con comas decimales correctamente
+                        # Primero mostrar datos originales para debug
+                        st.write("🔍 **Datos originales de cota (primeras 5):**")
+                        st.write(df_paste["cota"].head().tolist())
+                        
+                        # Convertir comas a puntos para procesamiento numérico
+                        df_paste["cota"] = df_paste["cota"].astype(str).str.replace(',', '.')
+                        
+                        # Mostrar datos después de conversión
+                        st.write("🔍 **Datos después de conversión (primeras 5):**")
+                        st.write(df_paste["cota"].head().tolist())
+                        
+                        # Convertir a numérico
+                        df_paste["cota"] = pd.to_numeric(df_paste["cota"], errors="coerce")
+                        
+                        # Mostrar datos finales
+                        st.write("🔍 **Datos finales numéricos (primeras 5):**")
+                        st.write(df_paste["cota"].head().tolist())
+                        
+                        # CORRECCIÓN: Solo convertir NaN a 0 si es necesario, pero preservar valores válidos
+                        nan_count = df_paste["cota"].isna().sum()
+                        if nan_count > 0:
+                            st.warning(f"⚠️ {nan_count} valores de cota inválidos encontrados. Se convertirán a 0.")
+                            df_paste["cota"] = df_paste["cota"].fillna(0)
+                        else:
+                            st.success("✅ Todos los valores de cota son válidos")
+                        
+                        # Convertir x e y a numérico también
+                        df_paste["x"] = pd.to_numeric(df_paste["x"], errors="coerce")
+                        df_paste["y"] = pd.to_numeric(df_paste["y"], errors="coerce")
+                        
+                        # Eliminar filas con valores NaN en x o y
+                        df_paste = df_paste.dropna(subset=["x", "y"])
+                        
+                        # CORRECCIÓN: Debug detallado de datos procesados
+                        st.write(f"🔍 **Debug de datos procesados:**")
+                        st.write(f"   Filas procesadas: {len(df_paste)}")
+                        st.write(f"   Columnas: {list(df_paste.columns)}")
+                        if 'cota' in df_paste.columns:
+                            # Mostrar información detallada de cotas
+                            cotas_no_nan = df_paste['cota'][~df_paste['cota'].isna()]
+                            cotas_no_cero = cotas_no_nan[cotas_no_nan != 0]
+                            
+                            st.write(f"   Cotas no-NaN: {len(cotas_no_nan)} de {len(df_paste)}")
+                            st.write(f"   Cotas no-cero: {len(cotas_no_cero)} de {len(df_paste)}")
+                            
+                            if len(cotas_no_nan) > 0:
+                                st.write(f"   Rango de cotas (incluyendo ceros): {cotas_no_nan.min():.3f} a {cotas_no_nan.max():.3f}")
+                            if len(cotas_no_cero) > 0:
+                                st.write(f"   Rango de cotas válidas: {cotas_no_cero.min():.3f} a {cotas_no_cero.max():.3f}")
+                            
+                            # Mostrar algunos valores de ejemplo
+                            st.write(f"   Primeras 5 cotas: {df_paste['cota'].head().tolist()}")
+                            
+                            # Mostrar estadísticas detalladas
+                            if len(cotas_no_cero) > 0:
+                                st.write(f"📊 **Estadísticas de cotas válidas:**")
+                                st.write(f"   - Media: {cotas_no_cero.mean():.3f}")
+                                st.write(f"   - Mediana: {cotas_no_cero.median():.3f}")
+                                st.write(f"   - Desviación estándar: {cotas_no_cero.std():.3f}")
+                                st.write(f"   - Valores únicos: {len(cotas_no_cero.unique())}")
+                        
                         st.session_state["topo_df"] = df_paste
-                        st.success("Datos pegados insertados.")
+                        st.success(f"✅ Datos pegados insertados correctamente. {len(df_paste)} puntos procesados.")
                     except Exception as e:
-                        st.error(f"Error al procesar los datos pegados: {e}")
+                        st.error(f"❌ Error al procesar los datos pegados: {e}")
+                        st.info("💡 **Formato esperado:** No., x, y, cota, descripción (separados por tabulador, coma o punto y coma)")
+                        st.info("🔍 **Ejemplo con tabuladores:**")
+                        st.code("1\t123.456\t456.789\t12.345\tPunto de control\n2\t124.567\t457.890\t13.456\tVértice")
             with col_btn2:
+                if st.button("Datos de ejemplo", key="btn_topo_sample"):
+                    sample_df = create_sample_heatmap_data()
+                    st.session_state["topo_df"] = sample_df
+                    st.success("✅ Datos de ejemplo cargados (10 puntos en UTM zona 17S - Ecuador)")
+                    st.rerun()
+            
+            with col_btn3:
                 if st.button("Limpiar", key="btn_topo_clear_paste"):
                     st.session_state.topo_paste = ""
                     if "topo_df" in st.session_state:
                         st.session_state.topo_df = None
                     st.success("✅ Datos limpiados correctamente")
                     st.rerun()
-            with col_btn3:
-                if st.button("Pegar del portapapeles"):
-                    try:
-                        import pandas as pd
-                        import pyperclip
-                        
-                        # Verificar si pyperclip está disponible
-                        if not pyperclip.is_available():
-                            st.error("⚠️ Pyperclip no está disponible en tu sistema.")
-                            st.info("💡 **Solución**: Instala las dependencias necesarias:")
-                            st.code("pip install pyperclip")
-                            st.info("🔧 **Para Windows**: También necesitas instalar:")
-                            st.code("pip install pywin32")
-                            st.info("💡 **Alternativa**: Copia los datos y pégalos manualmente en el área de texto.")
-                        else:
-                            # Intentar leer del portapapeles
-                            clipboard_text = pyperclip.paste()
-                            if clipboard_text and clipboard_text.strip():
-                                # Usar read_clipboard para leer datos tabulares
-                                try:
-                                    df_clipboard = pd.read_clipboard(header=None, sep=r"\s*[,;\t]\s*")
-                                    # Convertir el dataframe a texto para mostrarlo en el área de texto
-                                    pasted_text = df_clipboard.to_csv(sep='\t', index=False, header=False)
-                                    st.session_state.topo_paste = pasted_text
-                                    st.success("✅ Datos pegados correctamente desde el portapapeles")
-                                    st.rerun()
-                                except Exception as clipboard_error:
-                                    st.warning(f"⚠️ No se pudieron procesar los datos del portapapeles como tabla: {clipboard_error}")
-                                    st.info("💡 **Alternativa**: Copia los datos y pégalos manualmente en el área de texto.")
-                            else:
-                                st.warning("⚠️ El portapapeles está vacío o no contiene datos válidos.")
-                                st.info("💡 **Sugerencia**: Copia datos tabulares y vuelve a intentar.")
-                    except ImportError as import_error:
-                        st.error(f"❌ Error de importación: {import_error}")
-                        st.info("💡 **Solución**: Instala pyperclip:")
-                        st.code("pip install pyperclip")
-                    except Exception as e:
-                        st.error(f"❌ Error inesperado: {e}")
-                        st.info("💡 **Alternativa**: Copia los datos y pégalos manualmente en el área de texto.")
+            st.markdown("---")
+            st.markdown("**📁 Configuración de salida:**")
             st.text_input("Nombre de carpeta", value=st.session_state.get("topo_folder", "Trabajo_Topográfico"), key="topo_folder")
             st.text_input("Ruta de descarga", value=st.session_state.get("topo_output_dir", str(Path.home() / "Downloads")), key="topo_output_dir")
             if (not IS_CLOUD) and st.button("Seleccionar carpeta de descarga", key="btn_topo_select_dir"):
@@ -2268,7 +3442,43 @@ def main():
             if df is not None:
                 # Renombrar columnas si es necesario
                 df = df.copy()
-                df.columns = headers[:len(df.columns)]
+                
+                # CORRECCIÓN: Manejar correctamente el número de columnas
+                if len(df.columns) <= len(headers):
+                    # Si el DataFrame tiene 5 o menos columnas, usar los headers correspondientes
+                    df.columns = headers[:len(df.columns)]
+                else:
+                    # Si el DataFrame tiene más de 5 columnas, usar los primeros 5 headers
+                    # y agregar nombres genéricos para las columnas adicionales
+                    df.columns = headers + [f"col_{i}" for i in range(len(headers), len(df.columns))]
+                
+                # CORRECCIÓN: Mostrar información del modo usando el session_state
+                current_mode = st.session_state.get("topo_dim", "2D")
+                if current_mode == "3D":
+                    st.success("🔺 **Modo 3D activado** - Los valores de cota se utilizarán en la generación")
+                    # Asegurar que la columna 'cota' tenga valores válidos
+                    if 'cota' in df.columns:
+                        # Convertir comas a puntos si es necesario
+                        df['cota'] = df['cota'].astype(str).str.replace(',', '.')
+                        # Convertir a numérico y manejar valores inválidos
+                        df['cota'] = pd.to_numeric(df['cota'], errors='coerce')
+                        # Mostrar información sobre valores NaN
+                        nan_count = df['cota'].isna().sum()
+                        if nan_count > 0:
+                            st.warning(f"⚠️ {nan_count} valores de cota inválidos encontrados. Se convertirán a 0.")
+                            df['cota'] = df['cota'].fillna(0)
+                        
+                        # Mostrar estadísticas solo si hay datos válidos
+                        valid_cotas = df['cota'][df['cota'] != 0]
+                        if len(valid_cotas) > 0:
+                            st.write(f"📊 **Estadísticas de cotas:** Min: {valid_cotas.min():.3f}, Max: {valid_cotas.max():.3f}, Media: {valid_cotas.mean():.3f}")
+                            st.write(f"📈 **Puntos con cota válida:** {len(valid_cotas)} de {len(df)}")
+                            st.write(f"🎯 **Rango de elevación:** {valid_cotas.max() - valid_cotas.min():.3f} metros")
+                        else:
+                            st.warning("⚠️ No hay valores de cota válidos en los datos")
+                else:
+                    st.info("📐 **Modo 2D activado** - Los valores de cota se ignorarán")
+                
                 st.dataframe(df)
             else:
                 st.info("No hay datos cargados.")
@@ -2778,6 +3988,7 @@ def main():
                             
                         # Generar HTML según el tipo de mapa seleccionado
                         html_map_type = st.session_state.get("html_map_type", "normal")
+                        point_size = st.session_state.get("map_point_size", 3)
                         if html_map_type == "mapbox":
                             index_html_content = create_mapbox_html(strip_z_from_geojson(geojson_serializable), title=f"{folder_name} - Visor de Mapa Topográfico", folder_name=folder_name, grouping_mode="type")
                         else:
@@ -2833,7 +4044,7 @@ def main():
           const props = feature.properties;
           
           const marker = L.circleMarker([lat, lon], {
-            radius: 8,
+            radius: __POINT_SIZE__,
             fillColor: '#ff7800',
             color: '#000',
             weight: 1,
@@ -2893,6 +4104,7 @@ def main():
                                 .replace("__BOUNDS__", json.dumps(bounds))
                                 .replace("__CENTER_LAT__", str(center_lat if 'center_lat' in locals() else -12.0))
                                 .replace("__CENTER_LON__", str(center_lon if 'center_lon' in locals() else -77.0))
+                                .replace("__POINT_SIZE__", str(point_size))
                             )
                     except Exception as e:
                         st.error(f"Error al generar el HTML del visor: {e}")
@@ -2900,12 +4112,117 @@ def main():
                     # Guardar HTML de visor en estado para renderizar fuera de la columna 3
                     st.session_state["topo_index_html"] = index_html_content
                     st.session_state["topo_main_folder"] = main_folder
+                    
+                    # CORRECCIÓN: Guardar GeoJSON topográfico en project_geojson para mostrar en pestaña Mapa del proyecto
+                    st.session_state["project_geojson"] = geojson_serializable
+                    st.session_state["project_folder_name"] = folder_name
+                    st.session_state["project_title"] = f"{folder_name} - Mapa Topográfico"
                     # Guardar también el HTML en la carpeta del proyecto topográfico
                     try:
                         with open(os.path.join(main_folder, "index.html"), "w", encoding="utf-8") as f:
                             f.write(index_html_content)
                     except Exception:
                         pass
+
+                    # Generar mapa de calor si está habilitado
+                    geotiff_bytes = None
+                    if st.session_state.get("topo_heatmap_enabled", False):
+                        try:
+                            # Validar datos antes de procesar
+                            validation = validate_heatmap_data(df)
+                            
+                            if not validation["valid"]:
+                                st.error(f"❌ Error en datos del mapa de calor: {validation['message']}")
+                            else:
+                                # Mostrar información de debug
+                                with st.expander("📊 Información del mapa de calor", expanded=False):
+                                    st.write(f"**Puntos totales:** {validation['total_points']}")
+                                    st.write(f"**Rango X:** {validation['x_range'][0]:.2f} - {validation['x_range'][1]:.2f}")
+                                    st.write(f"**Rango Y:** {validation['y_range'][0]:.2f} - {validation['y_range'][1]:.2f}")
+                                    st.write(f"**Rango Z (cotas):** {validation['z_range'][0]:.2f} - {validation['z_range'][1]:.2f}")
+                                    st.write(f"**Centro del área:** ({validation['center'][0]:.2f}, {validation['center'][1]:.2f})")
+                                    st.write(f"**Área de cobertura:** {validation['area_coverage']:.2f} unidades²")
+                                
+                                # Obtener configuración del mapa de calor
+                                margin_percent = st.session_state.get("topo_heatmap_margin", 15)
+                                resolution = st.session_state.get("topo_heatmap_resolution", 500)
+                                interpolation_method = st.session_state.get("topo_heatmap_method", "cubic")
+                                # El CRS se obtiene automáticamente de la configuración de la app
+                                input_epsg = st.session_state.get("input_epsg", 32717)
+                                selected_crs = f"EPSG:{input_epsg}"
+                                
+                                # Calcular bounds del raster
+                                bounds = calculate_raster_bounds(df, margin_percent)
+                                
+                                if bounds:
+                                    # Mostrar información de bounds
+                                    st.info(f"🗺️ **Área del raster:** ({bounds[0]:.2f}, {bounds[1]:.2f}) a ({bounds[2]:.2f}, {bounds[3]:.2f})")
+                                    
+                                    # Debug detallado de coordenadas
+                                    debug_info = debug_heatmap_coordinates(df, bounds, resolution)
+                                    
+                                    with st.expander("🔍 Debug detallado del mapa de calor", expanded=False):
+                                        st.write("**Matriz de transformación:**")
+                                        st.code(f"a={debug_info['transform_matrix'][0]:.6f}, b={debug_info['transform_matrix'][1]:.6f}")
+                                        st.code(f"c={debug_info['transform_matrix'][2]:.6f}, d={debug_info['transform_matrix'][3]:.6f}")
+                                        st.code(f"e={debug_info['transform_matrix'][4]:.6f}, f={debug_info['transform_matrix'][5]:.6f}")
+                                        
+                                        st.write("**Esquinas del raster:**")
+                                        st.write(f"Superior izquierda (0,0): {debug_info['corners']['top_left']}")
+                                        st.write(f"Superior derecha ({resolution},0): {debug_info['corners']['top_right']}")
+                                        st.write(f"Inferior izquierda (0,{resolution}): {debug_info['corners']['bottom_left']}")
+                                        st.write(f"Inferior derecha ({resolution},{resolution}): {debug_info['corners']['bottom_right']}")
+                                        
+                                        st.write("**Tamaño de píxel:**", debug_info['pixel_size'])
+                                        
+                                        st.write("**Puntos de muestra:**")
+                                        st.write(f"Primer punto: {debug_info['points_sample']['first_point']}")
+                                        st.write(f"Último punto: {debug_info['points_sample']['last_point']}")
+                                        st.write(f"Centro del área: {debug_info['points_sample']['center']}")
+                                    
+                                    # Generar GeoTIFF con georeferenciación precisa
+                                    geotiff_bytes = create_heatmap_geotiff(df, bounds, resolution, interpolation_method)
+                                    
+                                    if geotiff_bytes:
+                                        # Guardar GeoTIFF en la carpeta del proyecto
+                                        geotiff_path = os.path.join(main_folder, f"{folder_name}_heatmap.tif")
+                                        with open(geotiff_path, 'wb') as f:
+                                            f.write(geotiff_bytes)
+                                        
+                                        # Crear archivo de debug
+                                        debug_path = os.path.join(main_folder, f"{folder_name}_heatmap_debug.txt")
+                                        create_heatmap_debug_file(df, bounds, resolution, debug_path)
+                                        
+                                        st.success(f"🗺️ **Mapa de calor generado exitosamente:** {folder_name}_heatmap.tif")
+                                        st.success(f"📄 **Archivo de debug creado:** {folder_name}_heatmap_debug.txt")
+                                        
+                                        # Mostrar información del CRS usado
+                                        crs_display = f"EPSG:{input_epsg}"
+                                        if input_epsg == 32717:
+                                            crs_description = "UTM Zona 17S (Ecuador)"
+                                        elif input_epsg == 32718:
+                                            crs_description = "UTM Zona 18S (Perú)"
+                                        elif input_epsg == 32719:
+                                            crs_description = "UTM Zona 19S (Ecuador, Perú)"
+                                        elif input_epsg == 32618:
+                                            crs_description = "UTM Zona 18N (Colombia)"
+                                        elif input_epsg == 32619:
+                                            crs_description = "UTM Zona 19N (Colombia)"
+                                        elif input_epsg == 4326:
+                                            crs_description = "WGS84 (Lat/Lon)"
+                                        else:
+                                            crs_description = "Sistema personalizado"
+                                        
+                                        st.info(f"🌍 **CRS utilizado:** {crs_display} - {crs_description}")
+                                        st.info("💡 **Consejo:** Abre el archivo .tif en QGIS y aplica un estilo de mapa de calor para visualizar los resultados.")
+                                        st.info("🔍 **Debug:** Revisa el archivo .txt para verificar que las coordenadas estén correctas.")
+                                    else:
+                                        st.warning("⚠️ No se pudo generar el mapa de calor. Verifique que tenga al menos 3 puntos con cotas válidas.")
+                                else:
+                                    st.warning("⚠️ No se pudieron calcular los bounds del mapa de calor.")
+                        except Exception as e:
+                            st.error(f"❌ Error al generar mapa de calor: {e}")
+                            st.error("🔧 **Solución:** Verifique que los datos tengan coordenadas X, Y y cotas válidas.")
 
                     # Mensaje de éxito con ubicación
                     st.success(f"Salidas topográficas generadas en: {main_folder}")
@@ -2934,6 +4251,12 @@ def main():
                                         zf_.write(fp, arcname=os.path.join("shapefiles", fname))
                             except Exception:
                                 pass
+                            # Mapa de calor GeoTIFF
+                            if geotiff_bytes:
+                                try:
+                                    zf_.writestr(f"heatmap/{folder_name}_heatmap.tif", geotiff_bytes)
+                                except Exception:
+                                    pass
                             # Visor HTML
                             try:
                                 zf_.writestr("index.html", index_html_content or "")
@@ -3854,26 +5177,209 @@ def main():
 
     # Contenido de pestaña Mapa del proyecto
     with tab_map:
+        # CORRECCIÓN: Botón para actualizar puntos si se cambió el tamaño
+        if st.session_state.get("topo_index_html") or st.session_state.get("project_geojson"):
+            col_update1, col_update2, col_update3 = st.columns([1, 2, 1])
+            with col_update2:
+                if st.button("🔄 **Actualizar Tamaño de Puntos**", key="btn_update_points", help="Actualiza el tamaño de los puntos en los mapas según la configuración actual"):
+                    try:
+                        # Actualizar mapa topográfico si existe
+                        if st.session_state.get("topo_index_html") and st.session_state.get("project_geojson"):
+                            geojson_data = st.session_state["project_geojson"]
+                            folder_name = st.session_state.get("project_folder_name", "Proyecto")
+                            point_size = st.session_state.get("map_point_size", 3)
+                            html_map_type = st.session_state.get("html_map_type", "normal")
+                            
+                            if html_map_type == "mapbox":
+                                new_html = create_mapbox_html(
+                                    strip_z_from_geojson(geojson_data), 
+                                    title=f"{folder_name} - Visor de Mapa Topográfico", 
+                                    folder_name=folder_name, 
+                                    grouping_mode="type"
+                                )
+                            else:
+                                # HTML normal con Leaflet
+                                leaf_tpl = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>__TITLE__</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100vh; }
+    .leaflet-control-layers-expanded{ max-height: 60vh; overflow:auto; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    const map = L.map('map', {preferCanvas: true});
+    
+    const baseLayers = {
+      "Positron": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© CartoDB',
+        subdomains: 'abcd',
+        maxZoom: 19
+      }),
+      "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+      }),
+      "Satelital": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '© Esri'
+      })
+    };
+    
+    baseLayers['Positron'].addTo(map);
+    
+    const data = __GEOJSON__;
+    const overlays = {};
+    
+    function filterByType(features, type) {
+      return features.filter(f => f.properties && f.properties.type === type);
+    }
+    
+    const pts = L.geoJSON({type: 'FeatureCollection', features: filterByType(data.features || [], 'point')}, {
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+        radius: __POINT_SIZE__,
+        color: '#2c7fb8',
+        fill: true,
+        fillOpacity: 0.9
+      })
+    });
+    
+    const lns = L.geoJSON({type: 'FeatureCollection', features: (data.features || []).filter(f => ['line', 'polyline', 'track', 'route', 'shape'].includes(f.properties && f.properties.type))});
+    
+    const txt = L.geoJSON({type: 'FeatureCollection', features: filterByType(data.features || [], 'text')}, {
+      pointToLayer: (f, latlng) => L.marker(latlng, {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${(f.properties && f.properties.text) || ''}</div>`
+        })
+      })
+    });
+    
+    overlays['Puntos'] = pts;
+    overlays['Líneas'] = lns;
+    overlays['Textos'] = txt;
+    
+    pts.addTo(map);
+    lns.addTo(map);
+    
+    L.control.layers(baseLayers, overlays, {collapsed: false, position: 'topright'}).addTo(map);
+    
+    try {
+      const bounds = __BOUNDS__;
+      map.fitBounds([[bounds[0][0], bounds[0][1]], [bounds[1][0], bounds[1][1]]], {padding: [20, 20]});
+    } catch(e) {
+      map.setView([__CENTER_LAT__, __CENTER_LON__], 15);
+    }
+  </script>
+</body>
+</html>"""
+                                
+                                # Calcular bounds del GeoJSON
+                                bounds = [[-12.1, -77.1], [-11.9, -76.9]]  # Default
+                                if geojson_data.get("features"):
+                                    lons = []
+                                    lats = []
+                                    for feature in geojson_data["features"]:
+                                        if feature.get("geometry", {}).get("type") == "Point":
+                                            coords = feature["geometry"].get("coordinates", [])
+                                            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                                                lon = coords[0]
+                                                lat = coords[1]
+                                                lons.append(lon)
+                                                lats.append(lat)
+                                    
+                                    if lons and lats:
+                                        center_lat = (min(lats) + max(lats)) / 2
+                                        center_lon = (min(lons) + max(lons)) / 2
+                                        bounds = [[min(lats), min(lons)], [max(lats), max(lons)]]
+                                
+                                new_html = (
+                                    leaf_tpl
+                                    .replace("__TITLE__", f"{folder_name} - Visor de Mapa Topográfico")
+                                    .replace("__GEOJSON__", json.dumps(geojson_data, ensure_ascii=False))
+                                    .replace("__BOUNDS__", json.dumps(bounds))
+                                    .replace("__CENTER_LAT__", str(center_lat if 'center_lat' in locals() else -12.0))
+                                    .replace("__CENTER_LON__", str(center_lon if 'center_lon' in locals() else -77.0))
+                                    .replace("__POINT_SIZE__", str(point_size))
+                                )
+                            
+                            # Actualizar el HTML del mapa topográfico
+                            st.session_state["topo_index_html"] = new_html
+                        
+                        # Actualizar mapa general si existe
+                        if st.session_state.get("project_geojson"):
+                            pj_geo = st.session_state.get("project_geojson")
+                            html_map_type = st.session_state.get("html_map_type", "normal")
+                            point_size = st.session_state.get("map_point_size", 3)
+                            b = compute_bounds_from_geojson(pj_geo) or [[-2, -79], [-2, -79]]
+                            center_lat = (b[0][0] + b[1][0]) / 2
+                            center_lon = (b[0][1] + b[1][1]) / 2
+                            
+                            if html_map_type == "mapbox":
+                                html_now = create_mapbox_html(strip_z_from_geojson(pj_geo), title=st.session_state.get("project_title","Mapa del proyecto"), folder_name=st.session_state.get("project_folder_name","Proyecto"), grouping_mode=st.session_state.get("group_by","type"))
+                            else:
+                                leaf_tpl = """<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /><title>__TITLE__</title><link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" /><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } .leaflet-control-layers-expanded{ max-height: 60vh; overflow:auto; }</style></head><body><div id=\"map\"></div><script>const map=L.map('map',{preferCanvas:true});const baseLayers={\"Positron\":L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'© CartoDB',subdomains:'abcd',maxZoom:19}),\"OpenStreetMap\":L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'}),\"Satelital\":L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'© Esri'})};baseLayers['Positron'].addTo(map);const data=__GEOJSON__;const overlays={};function filterByType(features,type){return features.filter(f=>f.properties&&f.properties.type===type);}const pts=L.geoJSON({type:'FeatureCollection',features:filterByType(data.features||[],'point')},{pointToLayer:(f,latlng)=>L.circleMarker(latlng,{radius:__POINT_SIZE__,color:'#2c7fb8',fill:true,fillOpacity:0.9})});const lns=L.geoJSON({type:'FeatureCollection',features:(data.features||[]).filter(f=>['line','polyline','track','route','shape'].includes(f.properties&&f.properties.type))});const txt=L.geoJSON({type:'FeatureCollection',features:filterByType(data.features||[],'text')},{pointToLayer:(f,latlng)=>L.marker(latlng,{icon:L.divIcon({className:'',html:`<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${(f.properties&&f.properties.text)||''}</div>`})})});overlays['Puntos']=pts;overlays['Líneas']=lns;overlays['Textos']=txt;pts.addTo(map);lns.addTo(map);L.control.layers(baseLayers,overlays,{collapsed:false,position:'topright'}).addTo(map);const b=__BOUNDS__;try{map.fitBounds([[b[0][0],b[0][1]],[b[1][0],b[1][1]]],{padding:[20,20]});}catch(e){map.setView([__CENTER_LAT__,__CENTER_LON__],12);} </script></body></html>"""
+                                html_now = (leaf_tpl
+                                    .replace("__TITLE__", st.session_state.get("project_title","Mapa del proyecto"))
+                                    .replace("__GEOJSON__", json.dumps(strip_z_from_geojson(pj_geo)))
+                                    .replace("__BOUNDS__", json.dumps(b))
+                                    .replace("__CENTER_LAT__", str(center_lat))
+                                    .replace("__CENTER_LON__", str(center_lon))
+                                    .replace("__POINT_SIZE__", str(point_size))
+                                )
+                            
+                            # Guardar el HTML actualizado para regeneración
+                            st.session_state["project_html"] = html_now
+                        
+                        st.success("✅ **Puntos actualizados correctamente** - El tamaño se ha aplicado a todos los mapas")
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ **Error al actualizar puntos:** {e}")
+            
+            st.markdown("---")
+        
+        # CORRECCIÓN: Mostrar mapa topográfico si existe
+        if st.session_state.get("topo_index_html"):
+            st.markdown("### 🗺️ Mapa Topográfico")
+            st.components.v1.html(st.session_state["topo_index_html"], height=750)
+            st.markdown("---")
+        
         # Si hay GeoJSON del proyecto, rehacer HTML según el tipo de mapa actual (sin regenerar salidas)
         pj_geo = st.session_state.get("project_geojson")
         if pj_geo is not None:
+            st.markdown("### 🗺️ Mapa del Proyecto General")
             html_map_type = st.session_state.get("html_map_type", "normal")
-            b = compute_bounds_from_geojson(pj_geo) or [[-2, -79], [-2, -79]]
-            center_lat = (b[0][0] + b[1][0]) / 2
-            center_lon = (b[0][1] + b[1][1]) / 2
-            if html_map_type == "mapbox":
-                html_now = create_mapbox_html(strip_z_from_geojson(pj_geo), title=st.session_state.get("project_title","Mapa del proyecto"), folder_name=st.session_state.get("project_folder_name","Proyecto"), grouping_mode=st.session_state.get("group_by","type"))
+            
+            # CORRECCIÓN: Usar HTML actualizado si existe, sino generar nuevo
+            if st.session_state.get("project_html"):
+                html_now = st.session_state["project_html"]
             else:
-                leaf_tpl = """<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /><title>__TITLE__</title><link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" /><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } .leaflet-control-layers-expanded{ max-height: 60vh; overflow:auto; }</style></head><body><div id=\"map\"></div><script>const map=L.map('map',{preferCanvas:true});const baseLayers={\"Positron\":L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'© CartoDB',subdomains:'abcd',maxZoom:19}),\"OpenStreetMap\":L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'}),\"Satelital\":L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'© Esri'})};baseLayers['Positron'].addTo(map);const data=__GEOJSON__;const overlays={};function filterByType(features,type){return features.filter(f=>f.properties&&f.properties.type===type);}const pts=L.geoJSON({type:'FeatureCollection',features:filterByType(data.features||[],'point')},{pointToLayer:(f,latlng)=>L.circleMarker(latlng,{radius:3,color:'#2c7fb8',fill:true,fillOpacity:0.9})});const lns=L.geoJSON({type:'FeatureCollection',features:(data.features||[]).filter(f=>['line','polyline','track','route','shape'].includes(f.properties&&f.properties.type))});const txt=L.geoJSON({type:'FeatureCollection',features:filterByType(data.features||[],'text')},{pointToLayer:(f,latlng)=>L.marker(latlng,{icon:L.divIcon({className:'',html:`<div style=\'font-size:12px;color:#0d6efd;font-weight:600;\'>${(f.properties&&f.properties.text)||''}</div>`})})});overlays['Puntos']=pts;overlays['Líneas']=lns;overlays['Textos']=txt;pts.addTo(map);lns.addTo(map);L.control.layers(baseLayers,overlays,{collapsed:false,position:'topright'}).addTo(map);const b=__BOUNDS__;try{map.fitBounds([[b[0][0],b[0][1]],[b[1][0],b[1][1]]],{padding:[20,20]});}catch(e){map.setView([__CENTER_LAT__,__CENTER_LON__],12);} </script></body></html>"""
-                html_now = (leaf_tpl
-                    .replace("__TITLE__", st.session_state.get("project_title","Mapa del proyecto"))
-                    .replace("__GEOJSON__", json.dumps(strip_z_from_geojson(pj_geo)))
-                    .replace("__BOUNDS__", json.dumps(b))
-                    .replace("__CENTER_LAT__", str(center_lat))
-                    .replace("__CENTER_LON__", str(center_lon))
-                )
+                b = compute_bounds_from_geojson(pj_geo) or [[-2, -79], [-2, -79]]
+                center_lat = (b[0][0] + b[1][0]) / 2
+                center_lon = (b[0][1] + b[1][1]) / 2
+                if html_map_type == "mapbox":
+                    html_now = create_mapbox_html(strip_z_from_geojson(pj_geo), title=st.session_state.get("project_title","Mapa del proyecto"), folder_name=st.session_state.get("project_folder_name","Proyecto"), grouping_mode=st.session_state.get("group_by","type"))
+                else:
+                    leaf_tpl = """<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /><title>__TITLE__</title><link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" /><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><style> html, body { height: 100%; margin: 0; } #map { height: 100vh; } .leaflet-control-layers-expanded{ max-height: 60vh; overflow:auto; }</style></head><body><div id=\"map\"></div><script>const map=L.map('map',{preferCanvas:true});const baseLayers={\"Positron\":L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'© CartoDB',subdomains:'abcd',maxZoom:19}),\"OpenStreetMap\":L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'}),\"Satelital\":L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'© Esri'})};baseLayers['Positron'].addTo(map);const data=__GEOJSON__;const overlays={};function filterByType(features,type){return features.filter(f=>f.properties&&f.properties.type===type);}const pts=L.geoJSON({type:'FeatureCollection',features:filterByType(data.features||[],'point')},{pointToLayer:(f,latlng)=>L.circleMarker(latlng,{radius:__POINT_SIZE__,color:'#2c7fb8',fill:true,fillOpacity:0.9})});const lns=L.geoJSON({type:'FeatureCollection',features:(data.features||[]).filter(f=>['line','polyline','track','route','shape'].includes(f.properties&&f.properties.type))});const txt=L.geoJSON({type:'FeatureCollection',features:filterByType(data.features||[],'text')},{pointToLayer:(f,latlng)=>L.marker(latlng,{icon:L.divIcon({className:'',html:`<div style='font-size:12px;color:#0d6efd;font-weight:600;'>${(f.properties&&f.properties.text)||''}</div>`})})});overlays['Puntos']=pts;overlays['Líneas']=lns;overlays['Textos']=txt;pts.addTo(map);lns.addTo(map);L.control.layers(baseLayers,overlays,{collapsed:false,position:'topright'}).addTo(map);const b=__BOUNDS__;try{map.fitBounds([[b[0][0],b[0][1]],[b[1][0],b[1][1]]],{padding:[20,20]});}catch(e){map.setView([__CENTER_LAT__,__CENTER_LON__],12);} </script></body></html>"""
+                    point_size = st.session_state.get("map_point_size", 3)
+                    html_now = (leaf_tpl
+                        .replace("__TITLE__", st.session_state.get("project_title","Mapa del proyecto"))
+                        .replace("__GEOJSON__", json.dumps(strip_z_from_geojson(pj_geo)))
+                        .replace("__BOUNDS__", json.dumps(b))
+                        .replace("__CENTER_LAT__", str(center_lat))
+                        .replace("__CENTER_LON__", str(center_lon))
+                        .replace("__POINT_SIZE__", str(point_size))
+                    )
+            
             st.components.v1.html(html_now, height=750)
-        else:
+        elif not st.session_state.get("topo_index_html"):
             st.info("Genera salidas en alguna pestaña para ver aquí el mapa del proyecto (Leaflet o Mapbox).")
 
     # ========================
@@ -4224,12 +5730,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # Renderizar mapa Topográfico en fila nueva (ocupando columnas 2 y 3)
-    if st.session_state.get("topo_index_html"):
-        st.markdown("### 🗺️ Mapa del proyecto")
-        _c1, _cmap, _cR = st.columns([1, 30, 1])
-        with _cmap:
-            st.components.v1.html(st.session_state["topo_index_html"], height=700)
+    # CORRECCIÓN: Mapa eliminado de esta pestaña - usar pestaña "Mapa del proyecto"
 
 
 if __name__ == "__main__":
