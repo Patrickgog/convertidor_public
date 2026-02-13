@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flujo de Acceso - Conversor Universal Profesional</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1E88E5, #1976D2);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .section {
+            margin-bottom: 50px;
+            border: 2px solid #e3f2fd;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .section-header {
+            background: linear-gradient(135deg, #42a5f5, #1e88e5);
+            color: white;
+            padding: 20px;
+            font-size: 1.5em;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .section-content {
+            padding: 30px;
+            background: #fafafa;
+        }
+
+        .step {
+            background: white;
+            margin: 20px 0;
+            padding: 25px;
+            border-radius: 10px;
+            border-left: 5px solid #1E88E5;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .step:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+        }
+
+        .step-number {
+            background: #1E88E5;
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 15px;
+        }
+
+        .step-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #1565C0;
+            margin-bottom: 10px;
+        }
+
+        .step-description {
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .code-block {
+            background: #263238;
+            color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            margin: 15px 0;
+            overflow-x: auto;
+        }
+
+        .code-block .comment {
+            color: #4CAF50;
+        }
+
+        .highlight {
+            background: #fff3e0;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #FF9800;
+            margin: 15px 0;
+        }
+
+        .warning {
+            background: #ffebee;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #f44336;
+            margin: 15px 0;
+        }
+
+        .success {
+            background: #e8f5e8;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #4CAF50;
+            margin: 15px 0;
+        }
+
+        .file-structure {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            margin: 15px 0;
+            border: 1px solid #ddd;
+        }
+
+        .contact-info {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            margin-top: 40px;
+        }
+
+        .contact-info h3 {
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        .badge {
+            display: inline-block;
+            background: #1E88E5;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin: 5px;
+        }
+
+        .flow-diagram {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 20px 0;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .flow-item {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            flex: 1;
+            min-width: 150px;
+            margin: 5px;
+            border: 2px solid #1E88E5;
+        }
+
+        .arrow {
+            font-size: 2em;
+            color: #1E88E5;
+            margin: 0 10px;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+            
+            .flow-diagram {
+                flex-direction: column;
+            }
+            
+            .arrow {
+                transform: rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔄 Flujo Completo de Código de Acceso</h1>
+            <p>Conversor Universal Profesional v3.0</p>
+            <p>Guía detallada para desarrolladores y administradores</p>
+        </div>
+
+        <div class="content">
+            <!-- FLUJO GENERAL -->
+            <div class="section">
+                <div class="section-header">
+                    🎯 <span>Flujo General del Sistema</span>
+                </div>
+                <div class="section-content">
+                    <div class="flow-diagram">
+                        <div class="flow-item">
+                            <strong>👤 Usuario</strong><br>
+                            Solicita código
+                        </div>
+                        <div class="arrow">→</div>
+                        <div class="flow-item">
+                            <strong>🤖 Sistema</strong><br>
+                            Genera y envía
+                        </div>
+                        <div class="arrow">→</div>
+                        <div class="flow-item">
+                            <strong>📧 Email</strong><br>
+                            Código recibido
+                        </div>
+                        <div class="arrow">→</div>
+                        <div class="flow-item">
+                            <strong>✅ Acceso</strong><br>
+                            Autorizado
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- USUARIO SOLICITA ACCESO -->
+            <div class="section">
+                <div class="section-header">
+                    👤 <span>1. Usuario Solicita Acceso</span>
+                </div>
+                <div class="section-content">
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">1</span>
+                            Usuario entra a la aplicación
+                        </div>
+                        <div class="step-description">
+                            El usuario accede a la URL de tu aplicación web desplegada.
+                        </div>
+                        <div class="highlight">
+                            <strong>URL típica:</strong> https://tu-app.streamlit.app
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">2</span>
+                            Introduce su email autorizado
+                        </div>
+                        <div class="step-description">
+                            En el campo "📧 Email autorizado" introduce su dirección de correo.
+                        </div>
+                        <div class="code-block">
+cliente@empresa.com
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">3</span>
+                            Solicita código de acceso
+                        </div>
+                        <div class="step-description">
+                            Hace clic en el botón "📤 Enviar código".
+                        </div>
+                        <div class="success">
+                            ✅ Mensaje mostrado: "Código enviado a cliente@empresa.com"
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">4</span>
+                            Revisa su email
+                        </div>
+                        <div class="step-description">
+                            Busca el email en su bandeja de entrada y carpeta de spam.
+                        </div>
+                        <div class="highlight">
+                            <strong>⏰ Importante:</strong> El código expira en 10 minutos
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">5</span>
+                            Introduce código y accede
+                        </div>
+                        <div class="step-description">
+                            Introduce el código recibido (ej: ABC123) y hace clic en "🚀 Acceder".
+                        </div>
+                        <div class="success">
+                            🎉 ¡Acceso autorizado! La aplicación se carga completamente.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PAPEL DEL DESARROLLADOR -->
+            <div class="section">
+                <div class="section-header">
+                    👨‍💻 <span>2. Tu Papel como Desarrollador</span>
+                </div>
+                <div class="section-content">
+                    
+                    <h3 style="color: #1565C0; margin-bottom: 20px;">🎯 Configuración Inicial (Una sola vez)</h3>
+                    
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">1</span>
+                            Configurar Gmail App Password
+                        </div>
+                        <div class="step-description">
+                            Obtener contraseña de aplicación para envío automático de emails.
+                        </div>
+                        <div class="code-block">
+<span class="comment"># 1. Ir a Google Account → Security</span>
+<span class="comment"># 2. Activar verificación en 2 pasos</span>
+<span class="comment"># 3. App passwords → Generate → Mail</span>
+<span class="comment"># 4. Copiar contraseña: abcd efgh ijkl mnop</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">2</span>
+                            Editar configuración local
+                        </div>
+                        <div class="step-description">
+                            Configurar archivo secrets_local.toml con credenciales de Gmail.
+                        </div>
+                        <div class="code-block">
+ADMIN_EMAIL = "tu_email@gmail.com"
+ADMIN_PASSWORD = "abcd efgh ijkl mnop"  <span class="comment"># App password</span>
+AUTHORIZED_EMAILS = "cliente@empresa.com,otro@cliente.com"
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">3</span>
+                            Cambiar a modo producción
+                        </div>
+                        <div class="step-description">
+                            Activar el sistema completo con envío real de emails.
+                        </div>
+                        <div class="code-block">
+python switch_auth.py complete
+                        </div>
+                    </div>
+
+                    <h3 style="color: #1565C0; margin: 40px 0 20px 0;">⚙️ Gestión de Usuarios (Según necesidad)</h3>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">A</span>
+                            Opción A: Autorizar manualmente
+                        </div>
+                        <div class="step-description">
+                            Editar archivo authorized_users.json directamente.
+                        </div>
+                        <div class="file-structure">
+{
+  "cliente@empresa.com": {
+    "authorized_at": 1694257200,
+    "last_access": 0,
+    "session_count": 0,
+    "manually_added": true
+  }
+}
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">B</span>
+                            Opción B: Panel de administración
+                        </div>
+                        <div class="step-description">
+                            Usar interfaz web para gestión de usuarios.
+                        </div>
+                        <div class="code-block">
+streamlit run admin_panel.py  <span class="comment"># Password: Admin2025!</span>
+<span class="comment"># Agregar emails en la interfaz web</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SISTEMA AUTOMÁTICO -->
+            <div class="section">
+                <div class="section-header">
+                    🤖 <span>3. Lo que Hace el Sistema Automáticamente</span>
+                </div>
+                <div class="section-content">
+                    
+                    <h3 style="color: #1565C0; margin-bottom: 20px;">📧 Cuando usuario solicita código:</h3>
+                    
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">1</span>
+                            Verificar email autorizado
+                        </div>
+                        <div class="code-block">
+if email in authorized_emails:
+    <span class="comment"># Continuar proceso</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">2</span>
+                            Generar código aleatorio
+                        </div>
+                        <div class="code-block">
+code = generate_access_code()  <span class="comment"># Ej: "ABC123"</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">3</span>
+                            Guardar código temporalmente
+                        </div>
+                        <div class="file-structure">
+auth_codes.json:
+{
+  "cliente@empresa.com": {
+    "code": "ABC123",
+    "timestamp": 1694257200,
+    "used": false
+  }
+}
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">4</span>
+                            Enviar email automáticamente
+                        </div>
+                        <div class="step-description">
+                            El sistema usa tu Gmail para enviar el código al usuario.
+                        </div>
+                        <div class="highlight">
+                            <strong>Email enviado contiene:</strong><br>
+                            • Código de acceso (ABC123)<br>
+                            • Tiempo de expiración (10 minutos)<br>
+                            • Instrucciones de uso<br>
+                            • Información de contacto
+                        </div>
+                    </div>
+
+                    <h3 style="color: #1565C0; margin: 40px 0 20px 0;">🔐 Cuando usuario introduce código:</h3>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">1</span>
+                            Verificar código válido
+                        </div>
+                        <div class="code-block">
+if codes[email]['code'] == 'ABC123' and not expired:
+    <span class="comment"># Código correcto y no expirado</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">2</span>
+                            Marcar código como usado
+                        </div>
+                        <div class="code-block">
+codes[email]['used'] = True  <span class="comment"># Evitar reutilización</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">3</span>
+                            Autorizar usuario y crear sesión
+                        </div>
+                        <div class="code-block">
+st.session_state.authenticated = True
+st.session_state.user_email = email
+st.session_state.auth_timestamp = time.time()
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ARCHIVOS GENERADOS -->
+            <div class="section">
+                <div class="section-header">
+                    📁 <span>4. Archivos que se Crean Automáticamente</span>
+                </div>
+                <div class="section-content">
+                    
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">1</span>
+                            auth_codes.json (códigos temporales)
+                        </div>
+                        <div class="file-structure">
+{
+  "cliente@empresa.com": {
+    "code": "ABC123",
+    "timestamp": 1694257200,
+    "used": false
+  },
+  "otro@cliente.com": {
+    "code": "XYZ789", 
+    "timestamp": 1694257800,
+    "used": true
+  }
+}
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">2</span>
+                            authorized_users.json (usuarios autorizados)
+                        </div>
+                        <div class="file-structure">
+{
+  "cliente@empresa.com": {
+    "authorized_at": 1694257200,
+    "last_access": 1694260800,
+    "session_count": 3,
+    "manually_added": false
+  }
+}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TRABAJO DIARIO -->
+            <div class="section">
+                <div class="section-header">
+                    🎯 <span>5. Tu Trabajo Diario (Muy poco)</span>
+                </div>
+                <div class="section-content">
+                    
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="badge">Escenario 1</span>
+                            Cliente nuevo te contacta
+                        </div>
+                        <div class="step-description">
+                            <strong>Cliente:</strong> "Hola, quiero usar el conversor"<br>
+                            <strong>Tú:</strong>
+                        </div>
+                        <div class="code-block">
+<span class="comment"># 1. Agregar su email a authorized_users.json</span>
+<span class="comment"># O usar admin panel: streamlit run admin_panel.py</span>
+<span class="comment"># 2. Enviarle la URL de la app</span>
+<span class="comment"># 3. Decirle: "Solicita código con tu email"</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="badge">Escenario 2</span>
+                            Usuario no puede acceder
+                        </div>
+                        <div class="code-block">
+<span class="comment"># Ver qué pasó</span>
+streamlit run admin_panel.py
+<span class="comment"># Revisar logs, códigos, usuarios</span>
+<span class="comment"># Reautorizar si es necesario</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="badge">Escenario 3</span>
+                            Monitoreo (opcional)
+                        </div>
+                        <div class="code-block">
+<span class="comment"># Ver estadísticas de uso</span>
+streamlit run admin_panel.py
+<span class="comment"># Sección "Estadísticas"</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PROCESO TÍPICO -->
+            <div class="section">
+                <div class="section-header">
+                    🎯 <span>6. Proceso Típico con Cliente Real</span>
+                </div>
+                <div class="section-content">
+                    
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">1</span>
+                            Cliente te contacta
+                        </div>
+                        <div class="highlight">
+                            <strong>WhatsApp:</strong> "Hola, necesito usar el conversor"<br>
+                            <strong>Tú:</strong> "¿Cuál es tu email?"<br>
+                            <strong>Cliente:</strong> "juan@empresa.com"
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">2</span>
+                            Tú autorizas al usuario
+                        </div>
+                        <div class="code-block">
+<span class="comment"># Opción rápida: Admin panel</span>
+streamlit run admin_panel.py
+<span class="comment"># → Agregar: juan@empresa.com</span>
+
+<span class="comment"># O editar archivo directamente</span>
+<span class="comment"># authorized_users.json</span>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">3</span>
+                            Envías instrucciones
+                        </div>
+                        <div class="success">
+                            <strong>Tú:</strong> "¡Listo! Ve a: https://tu-app.streamlit.app<br><br>
+                            1. Introduce tu email: juan@empresa.com<br>
+                            2. Clic en 'Enviar código'<br>
+                            3. Revisa tu email (y spam)<br>
+                            4. Introduce el código de 6 caracteres<br>
+                            5. ¡Convierte tus archivos!"
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            <span class="step-number">4</span>
+                            Sistema automático funciona
+                        </div>
+                        <div class="success">
+                            • Cliente solicita código<br>
+                            • Sistema genera: XYZ789<br>
+                            • Tu Gmail envía email automáticamente<br>
+                            • Cliente introduce XYZ789<br>
+                            • ¡Accede sin tu intervención!
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RESUMEN -->
+            <div class="section">
+                <div class="section-header">
+                    🎯 <span>Resumen: Tu Trabajo Real</span>
+                </div>
+                <div class="section-content">
+                    
+                    <div class="step">
+                        <div class="step-title">
+                            Configuración inicial (1 hora, una sola vez)
+                        </div>
+                        <div class="step-description">
+                            1. Configurar Gmail App Password<br>
+                            2. Editar secrets_local.toml<br>
+                            3. Deploy en Streamlit Cloud<br>
+                            4. Probar con usuario real
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            Trabajo diario (5 minutos por cliente nuevo)
+                        </div>
+                        <div class="step-description">
+                            1. Cliente te contacta → Agregar email a lista<br>
+                            2. Enviar URL e instrucciones<br>
+                            3. Sistema funciona solo<br>
+                            4. Soporte ocasional si hay problemas
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-title">
+                            El sistema maneja automáticamente
+                        </div>
+                        <div class="success">
+                            ✅ Generación de códigos aleatorios<br>
+                            ✅ Envío automático de emails<br>
+                            ✅ Verificación y expiración<br>
+                            ✅ Gestión de sesiones<br>
+                            ✅ Logs y estadísticas
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CONTACTO -->
+            <div class="contact-info">
+                <h3>📞 Soporte Técnico</h3>
+                <p><strong>Desarrollador:</strong> Patricio Sarmiento Reinoso</p>
+                <p><strong>WhatsApp:</strong> +593995959047</p>
+                <p><strong>Versión:</strong> 3.0 Professional con Autenticación</p>
+                <p><strong>Fecha:</strong> Septiembre 2025</p>
+                <br>
+                <p><em>¡Tu papel es mínimo una vez configurado! El sistema es completamente automático. 🚀</em></p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

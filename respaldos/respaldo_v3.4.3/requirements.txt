@@ -1,0 +1,22 @@
+streamlit
+folium
+streamlit-folium
+ezdxf
+simplekml
+shapely
+pyshp
+pyproj
+numpy
+gpxpy
+fastkml
+pandas
+pyperclip
+
+# Cookies persistentes para "Recordar este dispositivo"
+streamlit-cookies-manager
+
+# Librerías para mapas de calor
+scipy
+rasterio
+geopandas
+

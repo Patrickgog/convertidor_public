@@ -9,7 +9,15 @@ pyproj
 numpy
 gpxpy
 fastkml
+pandas
+pyperclip
+Pillow
 
 # Cookies persistentes para "Recordar este dispositivo"
 streamlit-cookies-manager
+
+# Librerías para mapas de calor
+scipy
+rasterio
+geopandas
 

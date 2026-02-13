@@ -4,21 +4,13 @@ import json
 import logging
 from pathlib import Path
 
-# Configuración y Constantes (v3.4.4)
-import importlib
-import src.core.config.settings
-importlib.reload(src.core.config.settings)
+# Configuración y Constantes (v3.4.3)
 from src.core.config.settings import APP_VERSION, DEVELOPER, APP_NAME
 
 # Page config - DEBE SER LO PRIMERO (antes de importar auth que usa widgets)
-# Favicon dinámico
-favicon_path = "assets/favicon.png"
-if not os.path.exists(favicon_path):
-    favicon_path = "assets/favicon.jpg"
-
 st.set_page_config(
     page_title="CONVERSOR UNIVERSAL PROFESIONAL",
-    page_icon=favicon_path,
+    page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -59,40 +51,13 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    # Determine logo path and mime type
-    logo_path = None
-    mime_type = "image/png"
-    for ext, m_type in [("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg")]:
-        potential_path = f"assets/logo.{ext}"
-        if os.path.exists(potential_path):
-            logo_path = potential_path
-            mime_type = m_type
-            break
-    
-    # Global title with Logo (HTML/Flexbox for tighter control)
-    import base64
-    
-    logo_html = ""
-    if logo_path:
-        with open(logo_path, "rb") as f:
-            data = f.read()
-            encoded = base64.b64encode(data).decode()
-        logo_html = f'<img src="data:{mime_type};base64,{encoded}" style="width:100px; height:auto; margin-right:5px;">'
-    else:
-        logo_html = '<span style="font-size:60px;">📡</span>'
-
+    # Global title
     st.markdown(f"""
-    <div style="display:flex; align-items:center; gap:15px; margin-bottom:10px;">
-        {logo_html}
-        <div>
-            <h1 style="margin:0; padding:0; color:#0d6efd; font-size:36px; line-height:1.2;">{APP_NAME}</h1>
-            <span style="font-size:18px; color:#666;">{APP_VERSION}</span>
-        </div>
+    <div style="display:flex;align-items:center;gap:12px;margin:10px 0 4px 0;">
+      <span style="font-size:28px;">📡</span>
+      <h1 style="margin:0;color:#0d6efd;">{APP_NAME} <span style="font-size:16px;color:#666;font-weight:normal;">{APP_VERSION}</span></h1>
     </div>
-    <div style="color:#666; margin-bottom:20px; font-size:16px;">
-        Carga archivos, define el sistema de referencia y descarga resultados geoespaciales.
-    </div>
-    <hr style="margin-top: 5px; margin-bottom: 20px;">
+    <div style="color:#666;margin-bottom:12px;">Carga archivos, define el sistema de referencia y descarga resultados geoespaciales.</div>
     """, unsafe_allow_html=True)
 
     # Sidebar

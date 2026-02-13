@@ -162,11 +162,7 @@ def show_next_steps(auth_mode):
 
 def main():
     print("🔍 VERIFICACIÓN DE CONFIGURACIÓN")
-    try:
-        from src.core.config.settings import APP_VERSION
-        print(f"Conversor Universal Profesional {APP_VERSION}")
-    except ImportError:
-        print("Conversor Universal Profesional v3.0")
+    print("Conversor Universal Profesional v3.0")
     print("="*50)
     
     # Verificaciones
