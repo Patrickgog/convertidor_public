@@ -30,6 +30,7 @@ wheels/
 *.egg
 
 # Entornos virtuales
+.venv/
 venv/
 env/
 ENV/
@@ -51,3 +52,14 @@ desktop.ini
 # Archivos temporales
 *.tmp
 *.temp
+
+# Adiciones para limpieza de repositorio
+Resumenes/
+backups/
+respaldos/
+archive/
+z_docs/
+
+# Ignorar archivos markdown excepto README.md
+*.md
+!README.md
